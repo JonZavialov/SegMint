@@ -7,7 +7,7 @@
  * Model Context Protocol so agents can inspect diffs, cluster edits by intent,
  * and operate on Git at a semantic level.
  *
- * repo_status, list_changes, log, and group_changes use real git + embeddings.
+ * repo_status, list_changes, log, show_commit, and group_changes use real git + embeddings.
  * propose_commits, apply_commit, generate_pr return mocked data.
  */
 
@@ -24,6 +24,7 @@ import { getEmbeddingProvider } from "./embeddings.js";
 import { clusterByThreshold } from "./cluster.js";
 import { getRepoStatus } from "./status.js";
 import { getLog } from "./history.js";
+import { getCommit } from "./show.js";
 
 // ---------------------------------------------------------------------------
 // Server
@@ -181,6 +182,81 @@ server.registerTool(
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         structuredContent: result,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        content: [{ type: "text", text: message }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Tool: show_commit (Tier 1 — read-only)
+// ---------------------------------------------------------------------------
+
+const hunkSchema = z.object({
+  old_start: z.number(),
+  old_lines: z.number(),
+  new_start: z.number(),
+  new_lines: z.number(),
+  header: z.string(),
+  lines: z.array(z.string()),
+});
+
+const changeSchema = z.object({
+  id: z.string(),
+  file_path: z.string(),
+  hunks: z.array(hunkSchema),
+});
+
+server.registerTool(
+  "show_commit",
+  {
+    description:
+      "Retrieve full details for a single commit: metadata, affected files, and structured diff with Change/Hunk objects.",
+    inputSchema: z.object({
+      sha: z.string().describe("Commit SHA, short SHA, or ref to inspect"),
+    }),
+    outputSchema: z.object({
+      commit: z.object({
+        sha: z.string(),
+        short_sha: z.string(),
+        subject: z.string(),
+        body: z.string(),
+        author_name: z.string(),
+        author_email: z.string(),
+        author_date: z.string(),
+        committer_name: z.string(),
+        committer_email: z.string(),
+        committer_date: z.string(),
+        parents: z.array(z.string()),
+        files: z.array(z.object({ path: z.string(), status: z.string() })),
+        diff: z.object({
+          changes: z.array(changeSchema),
+        }),
+      }),
+    }),
+  },
+  async ({ sha }, _extra) => {
+    try {
+      const result = getCommit(sha);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        structuredContent: {
+          commit: {
+            ...result.commit,
+            files: result.commit.files.map((f) => ({ ...f })),
+            diff: {
+              changes: result.commit.diff.changes.map((c) => ({
+                ...c,
+                hunks: c.hunks.map((h) => ({ ...h, lines: [...h.lines] })),
+              })),
+            },
+          },
+        },
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

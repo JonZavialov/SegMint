@@ -65,6 +65,22 @@ export interface LogCommit {
   parents: string[];
 }
 
+export interface CommitDetail {
+  sha: string;
+  short_sha: string;
+  subject: string;
+  body: string;
+  author_name: string;
+  author_email: string;
+  author_date: string;
+  committer_name: string;
+  committer_email: string;
+  committer_date: string;
+  parents: string[];
+  files: FileStatus[];
+  diff: { changes: Change[] };
+}
+
 export interface RepoStatus {
   is_git_repo: boolean;
   root_path: string;
