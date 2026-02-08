@@ -1,8 +1,9 @@
 /**
  * Git diff execution and unified diff parsing.
  *
+ * Core substrate module: converts raw git output into structured Change objects.
  * Runs `git diff` and `git diff --cached` to capture unstaged and staged
- * changes, parses the unified diff output into structured Change objects.
+ * changes, parses the unified diff output into typed Change/Hunk primitives.
  */
 
 import { execFileSync } from "node:child_process";

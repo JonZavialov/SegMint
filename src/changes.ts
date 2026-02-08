@@ -1,8 +1,9 @@
 /**
- * Shared change-loading and text-building helpers.
+ * Shared change-loading, ID resolution, and embedding text construction.
  *
- * Used by both list_changes and group_changes to ensure a single source
- * of truth for change collection and ID assignment.
+ * Single source of truth for loading Change objects from the repository.
+ * Used by both list_changes and group_changes to ensure consistent
+ * ID assignment and change resolution across the substrate.
  */
 
 import { getUncommittedChanges } from "./git.js";

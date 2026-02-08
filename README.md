@@ -1,68 +1,115 @@
 # Segmint
 
-Segmint segments code changes by intent.
+A semantic Git runtime for AI agents.
 
-Modern Git workflows operate on raw diffs and files. Segmint works at a higher level -- it models repositories as structured changesets that AI agents can reason about. Related edits are grouped together, commits become semantic units, and pull requests reflect actual engineering decisions.
+Segmint is an MCP server that turns raw `git diff` output into structured, agent-readable objects. It parses diffs into typed Changes, clusters related edits by semantic similarity, and exposes everything through the Model Context Protocol so any MCP-compatible agent can inspect and manipulate repository state.
 
-Segmint is an MCP server that exposes Git as semantic objects so AI agents can inspect a dirty repo, cluster edits by intent, plan commits, apply them, and generate PR descriptions.
+Commit planning, PR generation, and other downstream workflows are optional consumers of this substrate — not the core product.
+
+## Core Primitives
+
+Segmint models a repository as a set of structured objects that agents operate on directly:
+
+| Primitive | What it represents |
+|---|---|
+| **Change** | A single file's diff — file path and typed hunks |
+| **Hunk** | A contiguous region of changed lines within a file |
+| **ChangeGroup** | A cluster of semantically related changes |
+| **CommitPlan** | A proposed commit covering one or more groups |
+| **PullRequestDraft** | A PR covering multiple commits |
+
+Change and Hunk are the foundational layer. Everything else is built on top.
 
 ## How It Works
 
-The core pipeline:
-
 ```
-git diff --> Change[] --> embeddings --> clustering --> ChangeGroup[] --> CommitPlan[] --> PullRequestDraft
+git diff ──► Change[] ──► embeddings ──► clustering ──► ChangeGroup[]
+                                                            │
+                                              (optional downstream)
+                                                            ▼
+                                                     CommitPlan[] ──► PullRequestDraft
 ```
 
-Segmint runs as a stdio-based MCP server. An AI agent connects over stdin/stdout using JSON-RPC, calls tools to inspect changes, group them, plan commits, and generate PRs.
+Segmint runs as a stdio-based MCP server. An AI agent connects over stdin/stdout using JSON-RPC, calls tools to read structured diffs, group related changes, and optionally plan commits or generate PRs.
 
-What is mechanical (no LLM): diff parsing, embedding text construction, cosine similarity, clustering, ID assignment.
+**What is mechanical (no LLM):** diff parsing, Change construction, embedding text assembly, cosine similarity, clustering, deterministic ID assignment.
 
-What uses LLMs: group summaries (planned), commit message generation (planned), PR description generation (planned). Currently these produce heuristic or mocked output.
+**What uses LLMs:** embedding vectors (OpenAI `text-embedding-3-small`). Group summaries, commit messages, and PR descriptions are currently heuristic — LLM integration is planned.
+
+## MCP Tools
+
+| Tool | Status | Description |
+|---|---|---|
+| `list_changes` | Real | Parse uncommitted diffs into structured `Change[]` objects |
+| `group_changes` | Real | Cluster changes by semantic similarity into `ChangeGroup[]` |
+| `propose_commits` | Mocked | Propose a commit sequence from change groups |
+| `apply_commit` | Mocked | Stage and commit files for a given commit plan |
+| `generate_pr` | Mocked | Generate a pull request draft from commits |
+
+### list_changes
+
+Returns all uncommitted changes (staged + unstaged) as structured `Change[]` objects with typed hunks.
+
+- Runs both `git diff` and `git diff --cached`, merges per file (staged hunks first)
+- Sorts by file path, assigns deterministic IDs (`change-1`, `change-2`, ...)
+- Handles new files, deleted files, skips binary files
+- Returns `{ isError: true }` if not in a git repository
+
+### group_changes
+
+Clusters changes by semantic similarity using embeddings.
+
+- Input: `{ change_ids: string[] }` — IDs from `list_changes`
+- Validates IDs against current repository state
+- Builds embedding text from file path + hunk headers + diff lines
+- Calls OpenAI `text-embedding-3-small` for vector embeddings
+- Clusters using centroid-based greedy cosine similarity (threshold 0.80)
+- Single-change input skips embeddings and returns one group directly
+- Requires `OPENAI_API_KEY` (returns structured error if missing)
 
 ## Architecture
 
 ### MCP Server Model
 
-Segmint uses the Model Context Protocol (MCP) over stdio transport. The server exposes tools that clients call via JSON-RPC:
+Segmint uses the Model Context Protocol over stdio transport. The server exposes tools that clients call via JSON-RPC:
 
 1. Client sends `initialize` with protocol version and capabilities.
 2. Client sends `notifications/initialized`.
 3. Client calls `tools/list` to discover available tools.
 4. Client calls `tools/call` with tool name and arguments.
 
-All tool responses include both a `content` array (text JSON for display) and `structuredContent` (typed object for programmatic use).
+All tool responses include both `content` (text JSON for display) and `structuredContent` (typed object for programmatic use).
 
 ### Data Models
 
 All models are defined in `src/models.ts`.
 
-**Change** -- A single file's diff, parsed from `git diff` output.
+**Change** — a single file's diff, parsed from `git diff` output.
 ```
 { id: string, file_path: string, hunks: Hunk[] }
 ```
 
-**Hunk** -- A contiguous region of changed lines within a file.
+**Hunk** — a contiguous region of changed lines within a file.
 ```
 { old_start, old_lines, new_start, new_lines, header: string, lines: string[] }
 ```
 
-**ChangeGroup** -- A cluster of related changes grouped by semantic similarity.
+**ChangeGroup** — a cluster of related changes grouped by semantic similarity.
 ```
 { id: string, change_ids: string[], summary: string }
 ```
 
-**CommitPlan** -- A proposed commit covering one or more change groups.
+**CommitPlan** — a proposed commit covering one or more change groups.
 ```
 { id: string, title: string, description: string, change_group_ids: string[] }
 ```
 
-**PullRequestDraft** -- A PR covering multiple commits.
+**PullRequestDraft** — a PR covering multiple commits.
 ```
 { title: string, description: string, commits: CommitPlan[] }
 ```
 
-### Current Pipeline Status
+### Pipeline Status
 
 | Stage | Status | Implementation |
 |---|---|---|
@@ -71,46 +118,10 @@ All models are defined in `src/models.ts`.
 | Embedding text | Real | Built from file path + hunk headers + diff lines (truncated at 200 lines) |
 | Embedding vectors | Real | OpenAI `text-embedding-3-small` via pluggable `EmbeddingProvider` |
 | Clustering | Real | Centroid-based greedy cosine similarity (threshold 0.80) |
-| Group summaries | Heuristic | `"Changes in <file>"` or `"Related changes across <file1>, <file2>"` |
+| Group summaries | Heuristic | File-path-based summaries (LLM summaries planned) |
 | Commit planning | Mocked | Returns deterministic mock data |
-| Commit execution | Mocked | Always returns `{ success: true }` |
+| Commit execution | Mocked | Returns `{ success: true }` |
 | PR generation | Mocked | Returns deterministic mock data |
-
-## Current Features
-
-### list_changes (real)
-
-Returns all uncommitted changes (staged + unstaged) as structured `Change[]` objects.
-
-- Runs both `git diff --no-color --unified=3` and `git diff --cached --no-color --unified=3`
-- Merges hunks per file (staged first, then unstaged)
-- Sorts by file path, assigns deterministic IDs
-- Handles new files, deleted files, binary files (skipped)
-- Returns `{ isError: true }` if not a git repo or git is not installed
-
-### group_changes (real)
-
-Clusters changes by semantic similarity using OpenAI embeddings.
-
-- Input: `{ change_ids: string[] }` (IDs from `list_changes`)
-- Validates IDs against current repo state (not mock data)
-- Builds embedding text from file path and diff content
-- Calls OpenAI `text-embedding-3-small` for vector embeddings
-- Clusters using centroid-based greedy cosine similarity (threshold 0.80)
-- Single-change optimization: skips embeddings, returns one group directly
-- Requires `OPENAI_API_KEY` (returns structured error if missing)
-
-### propose_commits (mocked)
-
-Returns deterministic mock `CommitPlan[]`. Validates input against mock group IDs.
-
-### apply_commit (mocked)
-
-Always returns `{ success: true }`. Validates input against mock commit IDs.
-
-### generate_pr (mocked)
-
-Returns a deterministic mock `PullRequestDraft`. Validates input against mock commit IDs.
 
 ## Directory Structure
 
@@ -125,7 +136,7 @@ src/
                   using text-embedding-3-small.
   cluster.ts      Cosine similarity function and centroid-based greedy clustering algorithm.
   mock-data.ts    Deterministic mock data for propose_commits, apply_commit, generate_pr.
-                  Part of the test contract -- IDs are relied on by smoke tests.
+                  Part of the test contract — IDs are relied on by smoke tests.
 
 typescript-sdk/   Local copy of the MCP TypeScript SDK (read-only reference).
 llms-full.txt     MCP protocol documentation (read-only reference).
@@ -177,6 +188,8 @@ npm start
 
 ## Design Principles
 
+**Substrate, not application.** Segmint provides structured Git primitives for agents. Commit planning, PR generation, and workflow automation are downstream consumers — they use the substrate but do not define it.
+
 **Determinism.** Changes are sorted by file path before ID assignment. Clustering processes inputs in sorted order. Group IDs are assigned sequentially. Given the same diff and embeddings, the output is identical.
 
 **MCP stdout hygiene.** stdout is reserved exclusively for JSON-RPC protocol messages. All diagnostic output goes to stderr via `console.error`. No banners, no startup messages on stdout.
@@ -189,17 +202,60 @@ npm start
 
 **Structured errors, never crashes.** Invalid input returns `{ isError: true }` with a descriptive message. The MCP server never crashes on bad user input.
 
-## Roadmap
+## Capability Roadmap (Tiers)
+
+Segmint's long-term direction is to expose comprehensive Git capabilities as structured, agent-operable primitives. Tools are organized into tiers by safety profile and dependency order.
+
+The next major development focus is **Tier 1 + Tier 2**. These tiers define what Segmint becomes as a Git substrate — everything else is downstream.
+
+### Tier 1: Read-Only Repo Intelligence (safe, foundational)
+
+Tools that let an agent understand repository state without mutating anything. These are the highest priority because they are safe, composable, and foundational for all downstream operations.
+
+- `repo_status` — staged/unstaged/untracked counts, current branch, ahead/behind remote
+- `log` — commit history with filters (author, date range, paths, max count)
+- `show_commit` — full commit details (message, author, diff) for a given SHA
+- `diff` — structured diff between any two refs (branches, commits, tags) with optional path filtering
+- `blame` — line-level attribution for a file or line range
+- `list_branches` / `list_tags` / `current_branch` — ref enumeration
+- `list_remotes` / `remote_info` — remote configuration
+
+### Tier 2: Workspace Mutation (controlled, reversible)
+
+Tools that change working tree or index state. All Tier 2 tools must include explicit safety guardrails (confirmation semantics, dry-run modes, or undo paths).
+
+- `stage_changes` / `unstage_changes` — hunk-level staging/unstaging where possible
+- `apply_patch` / `revert_patch` — apply or reverse a structured patch
+- `checkout_branch` / `create_branch` — branch switching and creation
+- `stash_save` / `stash_list` / `stash_pop` / `stash_drop` — stash management
+- `reset_soft` / `reset_mixed` — with guardrails preventing data loss (no `--hard`)
+
+### Tier 3: Irreversible / Destructive Operations (gated)
+
+Operations like `push`, `rebase`, `reset --hard`, `force push`, and history rewriting. Tier 3 is **not a near-term priority**. When implemented, every Tier 3 tool must be gated behind explicit safety/preview mechanisms (dry-run by default, confirmation required, destructive flags opt-in).
+
+### Phase Roadmap
 
 | Phase | Status | Scope |
 |---|---|---|
 | Phase 1 | Complete | MCP skeleton, tool registration, mock data |
-| Phase 2 | Complete | Real git diff parsing for `list_changes` |
-| Phase 3 | Complete | OpenAI embeddings + clustering for `group_changes` |
-| Phase 4 | Planned | Commit planner agent for `propose_commits` |
-| Phase 5 | Planned | Real git execution for `apply_commit` + PR generation |
+| Phase 2 | Complete | Real git diff parsing — structured Change objects |
+| Phase 3 | Complete | Embeddings + clustering — semantic ChangeGroups |
+| Phase 4 | Planned | LLM-powered group summaries and commit planning |
+| Phase 5 | Planned | Real git staging/commit execution + PR generation |
+| Phase 6 | Planned | Tier 1 read-only repo intelligence tools |
+| Phase 7 | Planned | Tier 2 workspace mutation tools with guardrails |
 
-Phases are sequential. Each builds on the previous one.
+Phases are sequential. Each builds on the previous one. Tier 1 and Tier 2 tools define the substrate's capability coverage. Commit and PR tooling (Phases 4–5) are downstream consumers that will be restructured to operate on Tier 1/2 primitives as they become available.
+
+## Non-Goals (for now)
+
+These are explicitly out of scope and must not drive substrate design:
+
+- **UX-layer commit/PR assistance.** Segmint is not building a user-facing commit planner or PR writing tool. `propose_commits` and `generate_pr` exist as optional downstream consumers of the substrate. They must not influence the design of Tier 1/2 primitives.
+- **Opinionated Git workflows.** Segmint does not enforce branching strategies, commit conventions, or merge policies. It exposes Git capabilities; agents decide how to use them.
+- **Interactive UIs or dashboards.** Segmint is a headless MCP server. Any UI is a separate concern built on top.
+- **Git hosting integration.** GitHub/GitLab/Bitbucket API wrappers are not part of the substrate. PR generation produces a local draft; pushing or creating remote PRs is a downstream operation.
 
 ## Development Rules
 

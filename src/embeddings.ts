@@ -1,5 +1,9 @@
 /**
  * Pluggable embedding provider interface and default OpenAI implementation.
+ *
+ * Provides the vector representation layer for semantic clustering.
+ * The EmbeddingProvider interface decouples the substrate from any
+ * specific embedding API.
  */
 
 /**

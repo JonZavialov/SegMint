@@ -1,5 +1,9 @@
 /**
  * Segmint canonical data models.
+ *
+ * These are the core primitives of the semantic Git substrate.
+ * Change and Hunk are the foundational layer. ChangeGroup, CommitPlan,
+ * and PullRequestDraft are built on top as optional downstream structures.
  */
 
 export interface Hunk {

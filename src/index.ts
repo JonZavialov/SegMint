@@ -2,8 +2,10 @@
 /**
  * Segmint MCP Server
  *
- * Exposes Git as semantic objects (Change, ChangeGroup, CommitPlan, PullRequestDraft)
- * so AI agents can inspect a repo, cluster edits by intent, plan commits, and generate PRs.
+ * A semantic Git runtime for AI agents. Exposes repository state as structured,
+ * typed objects (Change, ChangeGroup, CommitPlan, PullRequestDraft) over the
+ * Model Context Protocol so agents can inspect diffs, cluster edits by intent,
+ * and operate on Git at a semantic level.
  *
  * list_changes and group_changes use real git + embeddings.
  * propose_commits, apply_commit, generate_pr return mocked data.

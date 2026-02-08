@@ -2,15 +2,32 @@
 
 ## What This Is
 
-Segmint is an MCP server that exposes Git as semantic objects so AI agents can inspect a dirty repo, cluster edits by intent, plan commits, apply them, and generate PR descriptions.
+Segmint is a semantic Git runtime for AI agents. It is an MCP server that turns raw `git diff` output into structured, agent-readable objects — typed Changes, semantic ChangeGroups — so any MCP-compatible agent can inspect and manipulate repository state.
 
-The core pipeline is deterministic:
+The core substrate is deterministic:
 
 ```
-git diff → Change objects → embeddings → clustering → ChangeGroups → CommitPlans → PullRequestDraft
+git diff → Change[] → embeddings → clustering → ChangeGroup[]
 ```
 
-LLMs participate only in: group summaries, commit planning, and PR generation. Everything else is mechanical.
+Commit planning, PR generation, and other workflows are optional downstream consumers of this substrate — not the core product.
+
+LLMs participate only in: embedding vectors (currently), and planned group summaries, commit planning, and PR generation. Everything else is mechanical.
+
+## Product Direction (Non-Negotiable)
+
+Segmint is **infrastructure**, not an application. It provides structured Git primitives that agents operate on directly.
+
+**Core identity:** A semantic Git runtime — structured diffs, typed Change objects, intent-based grouping.
+
+**What Segmint is NOT:**
+- Not a commit assistant
+- Not a PR generator
+- Not a Git workflow tool
+
+**Architectural rule:** Commit planning and PR generation are downstream features that consume the substrate. They must never be framed as the core product, and the substrate must be independently useful without them.
+
+**Language standard:** All descriptions, comments, and documentation must use substrate/runtime/primitive language. Never "assistant", "helper", or "workflow tool".
 
 ## Project Status
 
@@ -25,10 +42,12 @@ Planned phases (do NOT start unless explicitly instructed):
 
 | Phase | Scope |
 |---|---|
-| Phase 4 | Commit planner agent |
-| Phase 5 | Executor + PR generation |
+| Phase 4 | LLM-powered group summaries and commit planning |
+| Phase 5 | Real git staging/commit execution + PR generation |
+| Phase 6 | Tier 1 read-only repo intelligence tools |
+| Phase 7 | Tier 2 workspace mutation tools with guardrails |
 
-Each phase builds on the previous one. Do not skip ahead. Do not begin future phase work speculatively.
+Each phase builds on the previous one. Do not skip ahead. Do not begin future phase work speculatively. Tier 1 and Tier 2 tools define the substrate's capability coverage. Commit and PR tooling (Phases 4–5) are downstream consumers that will be restructured to operate on Tier 1/2 primitives as they become available.
 
 ## Sources of Truth
 
@@ -237,6 +256,37 @@ Send these messages over stdin (each on its own line):
 - Configure `execFileSync` with sufficient `maxBuffer` (currently 10 MB) so large diffs do not crash.
 - On errors (not a git repo, git not installed), return structured tool errors (`{ isError: true }`). Do not crash the server.
 
+## Anti-Drift Contract: Substrate Tiers
+
+> These rules exist to prevent Segmint from drifting into "commit assistant" or "PR generator" territory. Every future agent must follow them.
+
+### Tier classification
+
+All tools belong to a tier. The tiers are:
+
+- **Tier 1 (read-only):** Safe, foundational tools that inspect repo state without mutation. Examples: `repo_status`, `log`, `show_commit`, `diff`, `blame`, `list_branches`, `list_tags`, `list_remotes`.
+- **Tier 2 (workspace mutation):** Controlled, reversible tools that change working tree or index. Examples: `stage_changes`, `unstage_changes`, `apply_patch`, `checkout_branch`, `stash_save`, `reset_soft`. All Tier 2 tools must include explicit safety guardrails.
+- **Tier 3 (irreversible/destructive):** `push`, `rebase`, `reset --hard`, force operations. Gated behind safety/preview mechanisms. Not a near-term priority.
+
+### Rules
+
+1. **Tier mapping required.** Every plan to implement a new tool must explicitly state which tier the tool belongs to before implementation begins. No tool is implemented without a tier assignment.
+2. **Capability naming.** Tool names and descriptions must reflect Git capabilities (e.g., `repo_status`, `stage_hunks`, `blame`). Names must never reflect assistant workflows (e.g., `plan_my_commits`, `help_with_pr`, `suggest_changes`).
+3. **Downstream positioning.** Any plan proposing commit planner, PR generator, or workflow automation features must position them as downstream consumers of Tier 1/2 primitives. They must not be framed as core substrate tools.
+4. **Roadmap updates mandatory.** Every PR or task that adds, removes, or changes tool capabilities MUST update the Capability Roadmap section in README.md in the same change.
+5. **Substrate independence.** Tier 1 and Tier 2 tools must be independently useful without commit/PR features. The substrate must never depend on downstream consumers.
+
+## Planning Checklist (New Tools)
+
+Before implementing any new MCP tool, complete this checklist:
+
+- [ ] **Tier assignment:** Which tier does this tool belong to? (1 = read-only, 2 = workspace mutation, 3 = irreversible)
+- [ ] **Inputs/outputs as typed primitives:** Define input schema (Zod) and output types using existing or new canonical models from `src/models.ts`
+- [ ] **Safety and guardrails:** For Tier 2+, define what guardrails prevent data loss (dry-run, confirmation, undo path). For Tier 3, define gating mechanism.
+- [ ] **Determinism guarantees:** State which parts of the output are deterministic and which depend on external state (repo contents, LLM responses)
+- [ ] **JSON-RPC test payload:** Write at least one example `tools/call` JSON-RPC message that exercises the tool, suitable for the smoke test sequence
+- [ ] **Error cases:** List expected error conditions and verify they return `{ isError: true }` with machine-readable messages
+
 ## Git and Commit Rules
 
 - Do not commit code unless explicitly instructed by the user.
@@ -256,6 +306,7 @@ Send these messages over stdin (each on its own line):
   - Environment variables
   - Directory structure
   - Roadmap phase
+  - Capability Roadmap tier assignments
 - If functionality is added or removed, `README.md` is updated in the same task.
 - Pull requests or task completions are considered incomplete if `README.md` is stale.
 
