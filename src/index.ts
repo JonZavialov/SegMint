@@ -7,7 +7,7 @@
  * Model Context Protocol so agents can inspect diffs, cluster edits by intent,
  * and operate on Git at a semantic level.
  *
- * list_changes and group_changes use real git + embeddings.
+ * repo_status, list_changes, and group_changes use real git + embeddings.
  * propose_commits, apply_commit, generate_pr return mocked data.
  */
 
@@ -22,6 +22,7 @@ import {
 import { loadChanges, resolveChangeIds, buildEmbeddingText } from "./changes.js";
 import { getEmbeddingProvider } from "./embeddings.js";
 import { clusterByThreshold } from "./cluster.js";
+import { getRepoStatus } from "./status.js";
 
 // ---------------------------------------------------------------------------
 // Server
@@ -68,6 +69,51 @@ server.registerTool(
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         structuredContent: result,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        content: [{ type: "text", text: message }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Tool: repo_status (Tier 1 — read-only)
+// ---------------------------------------------------------------------------
+
+server.registerTool(
+  "repo_status",
+  {
+    description:
+      "Get structured repository status: HEAD ref, staged/unstaged/untracked files, ahead/behind counts, and merge/rebase state.",
+    inputSchema: z.object({}),
+    outputSchema: z.object({
+      is_git_repo: z.boolean(),
+      root_path: z.string(),
+      head: z.object({
+        type: z.enum(["branch", "detached"]),
+        name: z.string().optional(),
+        sha: z.string().optional(),
+      }),
+      staged: z.array(z.object({ path: z.string(), status: z.string() })),
+      unstaged: z.array(z.object({ path: z.string(), status: z.string() })),
+      untracked: z.array(z.string()),
+      ahead_by: z.number().optional(),
+      behind_by: z.number().optional(),
+      upstream: z.string().optional(),
+      merge_in_progress: z.boolean(),
+      rebase_in_progress: z.boolean(),
+    }),
+  },
+  async (_args, _extra) => {
+    try {
+      const status = getRepoStatus();
+      return {
+        content: [{ type: "text", text: JSON.stringify(status, null, 2) }],
+        structuredContent: { ...status },
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

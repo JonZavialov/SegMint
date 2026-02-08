@@ -39,3 +39,32 @@ export interface PullRequestDraft {
   description: string;
   commits: CommitPlan[];
 }
+
+// ---------------------------------------------------------------------------
+// Tier 1: Read-only repo intelligence
+// ---------------------------------------------------------------------------
+
+export interface HeadInfo {
+  type: "branch" | "detached";
+  name?: string;
+  sha?: string;
+}
+
+export interface FileStatus {
+  path: string;
+  status: string;
+}
+
+export interface RepoStatus {
+  is_git_repo: boolean;
+  root_path: string;
+  head: HeadInfo;
+  staged: FileStatus[];
+  unstaged: FileStatus[];
+  untracked: string[];
+  ahead_by?: number;
+  behind_by?: number;
+  upstream?: string;
+  merge_in_progress: boolean;
+  rebase_in_progress: boolean;
+}

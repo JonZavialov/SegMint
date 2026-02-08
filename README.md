@@ -38,13 +38,27 @@ Segmint runs as a stdio-based MCP server. An AI agent connects over stdin/stdout
 
 ## MCP Tools
 
-| Tool | Status | Description |
-|---|---|---|
-| `list_changes` | Real | Parse uncommitted diffs into structured `Change[]` objects |
-| `group_changes` | Real | Cluster changes by semantic similarity into `ChangeGroup[]` |
-| `propose_commits` | Mocked | Propose a commit sequence from change groups |
-| `apply_commit` | Mocked | Stage and commit files for a given commit plan |
-| `generate_pr` | Mocked | Generate a pull request draft from commits |
+| Tool | Tier | Status | Description |
+|---|---|---|---|
+| `repo_status` | 1 | Real | Structured repository state — HEAD, staged/unstaged/untracked, ahead/behind, merge/rebase |
+| `list_changes` | 1 | Real | Parse uncommitted diffs into structured `Change[]` objects |
+| `group_changes` | — | Real | Cluster changes by semantic similarity into `ChangeGroup[]` |
+| `propose_commits` | — | Mocked | Propose a commit sequence from change groups |
+| `apply_commit` | — | Mocked | Stage and commit files for a given commit plan |
+| `generate_pr` | — | Mocked | Generate a pull request draft from commits |
+
+### repo_status
+
+Returns structured repository state as a single `RepoStatus` object.
+
+- HEAD info: branch name or detached SHA
+- Staged files with status labels (modified, added, deleted, renamed, etc.)
+- Unstaged files with status labels
+- Untracked file paths
+- Ahead/behind counts relative to upstream (if tracking branch exists)
+- Upstream tracking branch name
+- Merge/rebase in-progress flags (detected via `.git/MERGE_HEAD`, `.git/rebase-apply`, `.git/rebase-merge`)
+- Returns `{ isError: true }` if not in a git repository
 
 ### list_changes
 
@@ -109,10 +123,18 @@ All models are defined in `src/models.ts`.
 { title: string, description: string, commits: CommitPlan[] }
 ```
 
+**RepoStatus** — structured repository state snapshot (Tier 1).
+```
+{ is_git_repo, root_path, head: HeadInfo, staged: FileStatus[],
+  unstaged: FileStatus[], untracked: string[], ahead_by?, behind_by?,
+  upstream?, merge_in_progress, rebase_in_progress }
+```
+
 ### Pipeline Status
 
 | Stage | Status | Implementation |
 |---|---|---|
+| Repo status | Real | `git status --porcelain=v1 -b`, `git rev-parse`, `.git/` state detection |
 | `git diff` parsing | Real | Runs `git diff` and `git diff --cached`, merges staged + unstaged per file |
 | Change ID assignment | Real | Sorted by file path, assigned as `change-1`, `change-2`, ... |
 | Embedding text | Real | Built from file path + hunk headers + diff lines (truncated at 200 lines) |
@@ -127,14 +149,15 @@ All models are defined in `src/models.ts`.
 
 ```
 src/
-  index.ts        MCP server entrypoint. Registers all 5 tools and starts stdio transport.
-  models.ts       TypeScript interfaces for Change, ChangeGroup, CommitPlan, PullRequestDraft.
+  index.ts        MCP server entrypoint. Registers all 6 tools and starts stdio transport.
+  models.ts       TypeScript interfaces for all data models (Change, RepoStatus, etc.).
   git.ts          Executes git diff commands, parses unified diff format into Change objects.
   changes.ts      Shared change-loading helper. Single source of truth for ID assignment.
                   Also builds embedding text and resolves change IDs.
   embeddings.ts   Pluggable EmbeddingProvider interface. Ships with OpenAI implementation
                   using text-embedding-3-small.
   cluster.ts      Cosine similarity function and centroid-based greedy clustering algorithm.
+  status.ts       Repository status gathering — Tier 1 read-only repo intelligence.
   mock-data.ts    Deterministic mock data for propose_commits, apply_commit, generate_pr.
                   Part of the test contract — IDs are relied on by smoke tests.
 
@@ -176,8 +199,9 @@ The server communicates via stdin/stdout using JSON-RPC. Send one message per li
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0.0"}}}
 {"jsonrpc":"2.0","method":"notifications/initialized"}
 {"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
-{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_changes","arguments":{}}}
-{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"group_changes","arguments":{"change_ids":["change-1","change-2"]}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"repo_status","arguments":{}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"list_changes","arguments":{}}}
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"group_changes","arguments":{"change_ids":["change-1","change-2"]}}}
 ```
 
 Start the server and pipe input:
@@ -206,13 +230,13 @@ npm start
 
 Segmint's long-term direction is to expose comprehensive Git capabilities as structured, agent-operable primitives. Tools are organized into tiers by safety profile and dependency order.
 
-The next major development focus is **Tier 1 + Tier 2**. These tiers define what Segmint becomes as a Git substrate — everything else is downstream.
+The next major development focus is **Tier 1 + Tier 2**. These tiers define what Segmint becomes as a Git substrate — everything else is downstream. Tier 1 and Tier 2 tools are **planned but not yet in active development** — implementation begins only when explicitly instructed.
 
 ### Tier 1: Read-Only Repo Intelligence (safe, foundational)
 
 Tools that let an agent understand repository state without mutating anything. These are the highest priority because they are safe, composable, and foundational for all downstream operations.
 
-- `repo_status` — staged/unstaged/untracked counts, current branch, ahead/behind remote
+- `repo_status` — staged/unstaged/untracked counts, current branch, ahead/behind remote ✅
 - `log` — commit history with filters (author, date range, paths, max count)
 - `show_commit` — full commit details (message, author, diff) for a given SHA
 - `diff` — structured diff between any two refs (branches, commits, tags) with optional path filtering

@@ -1,5 +1,8 @@
 /**
- * Deterministic mock data for the Segmint MCP skeleton.
+ * Deterministic mock data for downstream consumer tools (propose_commits, apply_commit, generate_pr).
+ *
+ * Part of the test contract — IDs are relied on by the smoke test sequence.
+ * Do not change shapes, IDs, or return values unless tests are updated simultaneously.
  */
 
 import type { Change, ChangeGroup, CommitPlan, PullRequestDraft } from "./models.js";

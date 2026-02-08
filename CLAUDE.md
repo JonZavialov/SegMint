@@ -31,12 +31,13 @@ Segmint is **infrastructure**, not an application. It provides structured Git pr
 
 ## Project Status
 
-**Current phase: Phase 3 — Embeddings + clustering implemented for `group_changes`.**
+**Current phase: Phase 3 complete. `repo_status` (Tier 1) implemented ahead of Phase 6.**
 
 Completed:
-- Phase 1: MCP stdio server wired, 5 tools registered, canonical models, mock data, smoke tests
+- Phase 1: MCP stdio server wired, 6 tools registered, canonical models, mock data, smoke tests
 - Phase 2: `list_changes` returns real uncommitted changes (staged + unstaged) parsed from `git diff`
 - Phase 3: `group_changes` uses OpenAI embeddings + cosine-similarity clustering to group changes by intent
+- `repo_status` (Tier 1 read-only) implemented — structured repo state via git status porcelain parsing
 
 Planned phases (do NOT start unless explicitly instructed):
 
@@ -86,18 +87,20 @@ Defined in `src/models.ts`. These are the canonical shapes:
 - **ChangeGroup** — related changes clustered by intent: `{ id, change_ids[], summary }`
 - **CommitPlan** — a proposed commit: `{ id, title, description, change_group_ids[] }`
 - **PullRequestDraft** — a PR covering multiple commits: `{ title, description, commits[] }`
+- **RepoStatus** — structured repo state snapshot (Tier 1): `{ is_git_repo, root_path, head, staged[], unstaged[], untracked[], ahead_by?, behind_by?, upstream?, merge_in_progress, rebase_in_progress }`
 
 ## MCP Tool Contracts
 
 These names and signatures are canonical. Do not rename or change contracts without updating this file.
 
-| Tool | Input | Output | Description |
-|---|---|---|---|
-| `list_changes` | `{}` | `{ changes: Change[] }` | List uncommitted changes as structured objects |
-| `group_changes` | `{ change_ids: string[] }` | `{ groups: ChangeGroup[] }` | Group changes by intent |
-| `propose_commits` | `{ group_ids: string[] }` | `{ commits: CommitPlan[] }` | Propose commits from groups |
-| `apply_commit` | `{ commit_id: string }` | `{ success: boolean }` | Apply a commit plan to the repo |
-| `generate_pr` | `{ commit_ids: string[] }` | `PullRequestDraft` | Generate a PR draft from commits |
+| Tool | Tier | Input | Output | Description |
+|---|---|---|---|---|
+| `repo_status` | 1 | `{}` | `RepoStatus` | Structured repository state |
+| `list_changes` | 1 | `{}` | `{ changes: Change[] }` | List uncommitted changes as structured objects |
+| `group_changes` | — | `{ change_ids: string[] }` | `{ groups: ChangeGroup[] }` | Group changes by intent |
+| `propose_commits` | — | `{ group_ids: string[] }` | `{ commits: CommitPlan[] }` | Propose commits from groups (mocked) |
+| `apply_commit` | — | `{ commit_id: string }` | `{ success: boolean }` | Apply a commit plan to the repo (mocked) |
+| `generate_pr` | — | `{ commit_ids: string[] }` | `PullRequestDraft` | Generate a PR draft from commits (mocked) |
 
 All tools return both `content` (text JSON) and `structuredContent` (typed object).
 
@@ -131,6 +134,7 @@ src/
   changes.ts      — Shared change-loading, ID resolution, embedding text builder
   embeddings.ts   — Pluggable EmbeddingProvider interface + OpenAI implementation
   cluster.ts      — Cosine similarity + centroid-based greedy clustering
+  status.ts       — Repository status gathering (Tier 1 read-only)
 typescript-sdk/   — Local copy of MCP TypeScript SDK (READ-ONLY)
 llms-full.txt     — MCP protocol documentation (READ-ONLY)
 build/            — Compiled output (gitignored)
@@ -175,7 +179,7 @@ npm start        # node build/index.js (stdio)
 
 1. `npm run build` must succeed with zero errors.
 2. Start the MCP server and confirm it responds to `initialize`.
-3. Call `tools/list` and verify all 5 tools are present.
+3. Call `tools/list` and verify all 6 tools are present.
 4. Call `list_changes` and verify structured output.
 5. Call at least one additional tool.
 
@@ -191,8 +195,9 @@ Send these messages over stdin (each on its own line):
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0.0"}}}
 {"jsonrpc":"2.0","method":"notifications/initialized"}
 {"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
-{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_changes","arguments":{}}}
-{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"group_changes","arguments":{"change_ids":["change-1","change-2"]}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"repo_status","arguments":{}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"list_changes","arguments":{}}}
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"group_changes","arguments":{"change_ids":["change-1","change-2"]}}}
 ```
 
 ## Coding Standards
@@ -275,17 +280,21 @@ All tools belong to a tier. The tiers are:
 3. **Downstream positioning.** Any plan proposing commit planner, PR generator, or workflow automation features must position them as downstream consumers of Tier 1/2 primitives. They must not be framed as core substrate tools.
 4. **Roadmap updates mandatory.** Every PR or task that adds, removes, or changes tool capabilities MUST update the Capability Roadmap section in README.md in the same change.
 5. **Substrate independence.** Tier 1 and Tier 2 tools must be independently useful without commit/PR features. The substrate must never depend on downstream consumers.
+6. **No premature implementation.** Do NOT implement new Tier 1, Tier 2, or Tier 3 tools unless the user has explicitly instructed you to do so. Planning and documenting future tools is fine; writing code for them is not.
 
 ## Planning Checklist (New Tools)
 
 Before implementing any new MCP tool, complete this checklist:
 
+- [ ] **Explicit user instruction:** Has the user explicitly asked for this tool to be implemented? (Do NOT start Tier 1/2/3 work speculatively.)
+- [ ] **Phase status:** Is the current phase complete? Does the roadmap support this work now?
 - [ ] **Tier assignment:** Which tier does this tool belong to? (1 = read-only, 2 = workspace mutation, 3 = irreversible)
 - [ ] **Inputs/outputs as typed primitives:** Define input schema (Zod) and output types using existing or new canonical models from `src/models.ts`
 - [ ] **Safety and guardrails:** For Tier 2+, define what guardrails prevent data loss (dry-run, confirmation, undo path). For Tier 3, define gating mechanism.
 - [ ] **Determinism guarantees:** State which parts of the output are deterministic and which depend on external state (repo contents, LLM responses)
 - [ ] **JSON-RPC test payload:** Write at least one example `tools/call` JSON-RPC message that exercises the tool, suitable for the smoke test sequence
 - [ ] **Error cases:** List expected error conditions and verify they return `{ isError: true }` with machine-readable messages
+- [ ] **README + CLAUDE.md sync:** Confirm both docs will be updated in the same change (tool contracts, tier assignments, directory structure, test sequence)
 
 ## Git and Commit Rules
 
