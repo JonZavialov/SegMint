@@ -14,17 +14,17 @@ LLMs participate only in: group summaries, commit planning, and PR generation. E
 
 ## Project Status
 
-**Current phase: Phase 2 — Real git diff parsing implemented for `list_changes`.**
+**Current phase: Phase 3 — Embeddings + clustering implemented for `group_changes`.**
 
 Completed:
 - Phase 1: MCP stdio server wired, 5 tools registered, canonical models, mock data, smoke tests
 - Phase 2: `list_changes` returns real uncommitted changes (staged + unstaged) parsed from `git diff`
+- Phase 3: `group_changes` uses OpenAI embeddings + cosine-similarity clustering to group changes by intent
 
 Planned phases (do NOT start unless explicitly instructed):
 
 | Phase | Scope |
 |---|---|
-| Phase 3 | Embeddings + clustering → ChangeGroups |
 | Phase 4 | Commit planner agent |
 | Phase 5 | Executor + PR generation |
 
@@ -99,7 +99,7 @@ All tools must follow these conventions:
 - IDs (`change-1`, `change-2`, `group-1`, `group-2`, `commit-1`, `commit-2`) are relied on by the smoke test sequence.
 - Do not change mock shapes, IDs, or return values unless tests are updated simultaneously.
 - Mock behavior must remain fully deterministic — no randomness, no timestamps, no external state.
-- `list_changes` now returns real git changes, but `group_changes`, `propose_commits`, `apply_commit`, and `generate_pr` still validate against mock IDs. Real change IDs from `list_changes` will not match mock IDs — this is expected until those tools are implemented with real logic.
+- `list_changes` and `group_changes` now use real git data and embeddings. `propose_commits`, `apply_commit`, and `generate_pr` still validate against mock IDs.
 
 ## Directory Structure
 
@@ -107,8 +107,11 @@ All tools must follow these conventions:
 src/
   index.ts        — MCP server entrypoint, tool registration
   models.ts       — TypeScript interfaces for data models
-  mock-data.ts    — Deterministic mock data (test contract)
+  mock-data.ts    — Deterministic mock data (test contract for propose_commits, apply_commit, generate_pr)
   git.ts          — Git diff execution and unified diff parsing
+  changes.ts      — Shared change-loading, ID resolution, embedding text builder
+  embeddings.ts   — Pluggable EmbeddingProvider interface + OpenAI implementation
+  cluster.ts      — Cosine similarity + centroid-based greedy clustering
 typescript-sdk/   — Local copy of MCP TypeScript SDK (READ-ONLY)
 llms-full.txt     — MCP protocol documentation (READ-ONLY)
 build/            — Compiled output (gitignored)
@@ -132,6 +135,12 @@ build/            — Compiled output (gitignored)
 Current dependencies:
 - `@modelcontextprotocol/sdk` — MCP server framework
 - `zod` — schema validation
+
+## Environment Variables
+
+| Variable | Required by | Description |
+|---|---|---|
+| `OPENAI_API_KEY` | `group_changes` | OpenAI API key for text-embedding-3-small. If not set, `group_changes` returns a structured error explaining how to set it. |
 
 ## Build and Run
 

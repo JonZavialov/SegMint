@@ -5,19 +5,21 @@
  * Exposes Git as semantic objects (Change, ChangeGroup, CommitPlan, PullRequestDraft)
  * so AI agents can inspect a repo, cluster edits by intent, plan commits, and generate PRs.
  *
- * Exposes real git changes via list_changes. Other tools return mocked data.
+ * list_changes and group_changes use real git + embeddings.
+ * propose_commits, apply_commit, generate_pr return mocked data.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import {
-  MOCK_CHANGES,
   MOCK_CHANGE_GROUPS,
   MOCK_COMMIT_PLANS,
   MOCK_PR_DRAFT,
 } from "./mock-data.js";
-import { getUncommittedChanges } from "./git.js";
+import { loadChanges, resolveChangeIds, buildEmbeddingText } from "./changes.js";
+import { getEmbeddingProvider } from "./embeddings.js";
+import { clusterByThreshold } from "./cluster.js";
 
 // ---------------------------------------------------------------------------
 // Server
@@ -59,7 +61,7 @@ server.registerTool(
   },
   async (_args, _extra) => {
     try {
-      const changes = getUncommittedChanges();
+      const changes = loadChanges();
       const result = { changes };
       return {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
@@ -100,26 +102,76 @@ server.registerTool(
     }),
   },
   async ({ change_ids }, _extra) => {
-    // Validate that all requested IDs exist
-    const knownIds = new Set(MOCK_CHANGES.map((c) => c.id));
-    const unknown = change_ids.filter((id) => !knownIds.has(id));
-    if (unknown.length > 0) {
+    try {
+      // Resolve requested IDs against current repo state
+      const { changes, unknown } = resolveChangeIds(change_ids);
+      if (unknown.length > 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Unknown change IDs: ${unknown.join(", ")}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      // Single change — skip embeddings, return one group
+      if (changes.length === 1) {
+        const result = {
+          groups: [
+            {
+              id: "group-1",
+              change_ids: [changes[0].id],
+              summary: `Changes in ${changes[0].file_path}`,
+            },
+          ],
+        };
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          structuredContent: result,
+        };
+      }
+
+      // Get embedding provider (throws if OPENAI_API_KEY not set)
+      const provider = getEmbeddingProvider();
+
+      // Build embedding texts and compute embeddings
+      const texts = changes.map((c) => buildEmbeddingText(c));
+      const embeddings = await provider.embed(texts);
+
+      // Cluster by cosine similarity
+      const clusters = clusterByThreshold(embeddings, 0.80);
+
+      // Map clusters to ChangeGroups
+      const groups = clusters.map((cluster, idx) => {
+        const clusterChanges = cluster.indices.map((i) => changes[i]);
+        const filePaths = clusterChanges.map((c) => c.file_path);
+        const summary =
+          filePaths.length === 1
+            ? `Changes in ${filePaths[0]}`
+            : `Related changes across ${filePaths.join(", ")}`;
+
+        return {
+          id: `group-${idx + 1}`,
+          change_ids: clusterChanges.map((c) => c.id),
+          summary,
+        };
+      });
+
+      const result = { groups };
       return {
-        content: [
-          {
-            type: "text",
-            text: `Unknown change IDs: ${unknown.join(", ")}`,
-          },
-        ],
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        content: [{ type: "text", text: message }],
         isError: true,
       };
     }
-
-    const result = { groups: MOCK_CHANGE_GROUPS };
-    return {
-      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-      structuredContent: result,
-    };
   }
 );
 

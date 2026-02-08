@@ -2,3 +2,4 @@ node_modules
 build
 typescript-sdk
 llms-full.txt
+.env
