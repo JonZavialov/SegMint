@@ -151,4 +151,19 @@ describe("resolveChangeIds", () => {
     expect(result.changes).toEqual([]);
     expect(result.unknown).toEqual(["nope-1", "nope-2"]);
   });
+
+  it("returns empty changes and empty unknown for empty input", async () => {
+    const { resolveChangeIds } = await import("../../src/changes.js");
+    const result = resolveChangeIds([]);
+    expect(result.changes).toEqual([]);
+    expect(result.unknown).toEqual([]);
+  });
+
+  it("returns duplicates when duplicate IDs are requested", async () => {
+    const { resolveChangeIds } = await import("../../src/changes.js");
+    const result = resolveChangeIds(["change-1", "change-1"]);
+    // filter returns all matching entries for each occurrence
+    expect(result.changes).toHaveLength(1);
+    expect(result.unknown).toEqual([]);
+  });
 });

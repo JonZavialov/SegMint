@@ -21,7 +21,8 @@
       "Bash(git add:*)",
       "Bash(git rm:*)",
       "Bash(powershell -Command \"$input | Select-String -Pattern ''\\\\r''\")",
-      "Bash(git -C C:UsersjzavyDesktopSegMint status --porcelain NUL)"
+      "Bash(git -C C:UsersjzavyDesktopSegMint status --porcelain NUL)",
+      "Bash(npm run test:coverage:*)"
     ]
   }
 }

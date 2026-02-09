@@ -78,6 +78,24 @@ describe("parseMetadata", () => {
     const result = parseMetadata(raw);
     expect(result.parents).toEqual(["p1", "p2", "p3"]);
   });
+
+  it("handles body containing NUL (12+ parts)", () => {
+    // Body with embedded NUL splits into multiple parts (>11 total)
+    const parts = [
+      "sha", "sh", "sub",
+      "body-part1", "body-part2",     // body split across 2 parts
+      "Author", "a@m", "2024-01-01",
+      "Committer", "c@m", "2024-01-01",
+      "p1",
+    ];
+    const raw = parts.join("\0");
+    const result = parseMetadata(raw);
+    expect(result.sha).toBe("sha");
+    expect(result.subject).toBe("sub");
+    expect(result.body).toBe("body-part1\0body-part2");
+    expect(result.author_name).toBe("Author");
+    expect(result.parents).toEqual(["p1"]);
+  });
 });
 
 describe("parseNameStatus", () => {
@@ -103,6 +121,26 @@ describe("parseNameStatus", () => {
   it("skips lines with fewer than 2 parts", () => {
     const result = parseNameStatus("M\n");
     expect(result).toEqual([]);
+  });
+
+  it("parses added file", () => {
+    const result = parseNameStatus("A\tsrc/new-file.ts\n");
+    expect(result).toEqual([{ path: "src/new-file.ts", status: "added" }]);
+  });
+
+  it("parses deleted file", () => {
+    const result = parseNameStatus("D\tsrc/removed.ts\n");
+    expect(result).toEqual([{ path: "src/removed.ts", status: "deleted" }]);
+  });
+
+  it("parses multiple entries of mixed types", () => {
+    const input = "M\tsrc/mod.ts\nA\tsrc/new.ts\nD\tsrc/old.ts\nR100\ta.ts\tb.ts\n";
+    const result = parseNameStatus(input);
+    expect(result).toHaveLength(4);
+    expect(result[0]).toEqual({ path: "src/mod.ts", status: "modified" });
+    expect(result[1]).toEqual({ path: "src/new.ts", status: "added" });
+    expect(result[2]).toEqual({ path: "src/old.ts", status: "deleted" });
+    expect(result[3]).toEqual({ path: "b.ts", status: "renamed" });
   });
 });
 

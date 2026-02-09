@@ -73,4 +73,48 @@ describe("clusterByThreshold", () => {
     const result = clusterByThreshold([a, b]);
     expect(result).toHaveLength(1);
   });
+
+  it("threshold 0 clusters all non-zero vectors together", () => {
+    // cosine similarity is always >= 0 for non-negative vectors,
+    // and can be negative for opposite vectors, but threshold=0 means
+    // anything with similarity >= 0 joins the first cluster
+    const result = clusterByThreshold(
+      [[1, 0], [0, 1], [0.5, 0.5]],
+      0,
+    );
+    // [1,0] starts cluster. [0,1] has sim=0 with [1,0], which is >= 0, so it joins.
+    // [0.5,0.5] has sim > 0 with centroid, so it joins.
+    expect(result).toHaveLength(1);
+    expect(result[0].indices).toEqual([0, 1, 2]);
+  });
+
+  it("threshold 1 creates separate clusters for non-identical vectors", () => {
+    const result = clusterByThreshold(
+      [[1, 0], [0.99, 0.01], [0, 1]],
+      1.0,
+    );
+    // Only perfectly identical vectors (similarity === 1.0) would cluster.
+    // [0.99, 0.01] has sim < 1.0 with [1, 0], so it gets its own cluster.
+    expect(result).toHaveLength(3);
+  });
+
+  it("threshold 1 groups truly identical vectors", () => {
+    const result = clusterByThreshold(
+      [[1, 0], [1, 0], [0, 1]],
+      1.0,
+    );
+    expect(result).toHaveLength(2);
+    expect(result[0].indices).toEqual([0, 1]);
+    expect(result[1].indices).toEqual([2]);
+  });
+
+  it("negative threshold clusters opposite vectors together", () => {
+    const result = clusterByThreshold(
+      [[1, 0], [-1, 0], [0, 1]],
+      -1.0,
+    );
+    // Everything has sim >= -1.0, so all join first cluster
+    expect(result).toHaveLength(1);
+    expect(result[0].indices).toEqual([0, 1, 2]);
+  });
 });

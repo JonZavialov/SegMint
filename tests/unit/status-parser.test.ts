@@ -125,4 +125,56 @@ describe("parsePorcelain", () => {
     expect(result.unstaged).toEqual([]);
     expect(result.untracked).toEqual([]);
   });
+
+  it("parses staged added file", () => {
+    const result = parsePorcelain("## main\nA  src/new.ts\n");
+    expect(result.staged).toHaveLength(1);
+    expect(result.staged[0]).toEqual({ path: "src/new.ts", status: "added" });
+    expect(result.unstaged).toEqual([]);
+  });
+
+  it("parses staged deleted file", () => {
+    const result = parsePorcelain("## main\nD  src/old.ts\n");
+    expect(result.staged).toHaveLength(1);
+    expect(result.staged[0]).toEqual({ path: "src/old.ts", status: "deleted" });
+  });
+
+  it("parses unstaged deleted file", () => {
+    const result = parsePorcelain("## main\n D src/gone.ts\n");
+    expect(result.unstaged).toHaveLength(1);
+    expect(result.unstaged[0]).toEqual({ path: "src/gone.ts", status: "deleted" });
+    expect(result.staged).toEqual([]);
+  });
+
+  it("parses staged copied file", () => {
+    const result = parsePorcelain("## main\nC  old.ts -> copy.ts\n");
+    expect(result.staged).toHaveLength(1);
+    expect(result.staged[0]).toEqual({ path: "copy.ts", status: "copied" });
+  });
+
+  it("parses staged typechange", () => {
+    const result = parsePorcelain("## main\nT  link.ts\n");
+    expect(result.staged).toHaveLength(1);
+    expect(result.staged[0]).toEqual({ path: "link.ts", status: "typechange" });
+  });
+
+  it("parses unstaged typechange", () => {
+    const result = parsePorcelain("## main\n T link.ts\n");
+    expect(result.unstaged).toHaveLength(1);
+    expect(result.unstaged[0]).toEqual({ path: "link.ts", status: "typechange" });
+  });
+
+  it("parses staged unmerged file", () => {
+    const result = parsePorcelain("## main\nU  conflict.ts\n");
+    expect(result.staged).toHaveLength(1);
+    expect(result.staged[0]).toEqual({ path: "conflict.ts", status: "unmerged" });
+  });
+
+  it("parses AD (staged add, unstaged delete)", () => {
+    const result = parsePorcelain("## main\nAD src/temp.ts\n");
+    expect(result.staged).toHaveLength(1);
+    expect(result.staged[0]).toEqual({ path: "src/temp.ts", status: "added" });
+    expect(result.unstaged).toHaveLength(1);
+    expect(result.unstaged[0]).toEqual({ path: "src/temp.ts", status: "deleted" });
+  });
 });

@@ -104,6 +104,22 @@ describe("OpenAIEmbeddingProvider", () => {
       })
     );
   });
+
+  it("throws on network/fetch rejection", async () => {
+    globalThis.fetch = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
+    const provider = new OpenAIEmbeddingProvider("test-key");
+    await expect(provider.embed(["test"])).rejects.toThrow("Failed to fetch");
+  });
+
+  it("throws on malformed API response (missing data)", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({}),
+    });
+    const provider = new OpenAIEmbeddingProvider("test-key");
+    // json.data is undefined, iterating it will throw
+    await expect(provider.embed(["test"])).rejects.toThrow();
+  });
 });
 
 describe("getEmbeddingProvider", () => {
@@ -132,5 +148,17 @@ describe("getEmbeddingProvider", () => {
     process.env.OPENAI_API_KEY = "sk-test";
     const provider = getEmbeddingProvider();
     expect(provider).toBeInstanceOf(OpenAIEmbeddingProvider);
+  });
+
+  it("ignores non-'local' SEGMINT_EMBEDDING_PROVIDER value", () => {
+    process.env.SEGMINT_EMBEDDING_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "sk-test";
+    const provider = getEmbeddingProvider();
+    expect(provider).toBeInstanceOf(OpenAIEmbeddingProvider);
+  });
+
+  it("throws when SEGMINT_EMBEDDING_PROVIDER is non-local and no key", () => {
+    process.env.SEGMINT_EMBEDDING_PROVIDER = "remote";
+    expect(() => getEmbeddingProvider()).toThrow("OPENAI_API_KEY");
   });
 });

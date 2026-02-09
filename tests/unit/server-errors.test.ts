@@ -246,6 +246,46 @@ describe("server.ts error catch blocks", () => {
     expect((result.content as Array<{ text: string }>)[0].text).toBe("group string error");
   });
 
+  it("group_changes when embed() throws (provider created but embed fails)", async () => {
+    mockResolveChangeIds.mockReturnValue({
+      changes: [
+        { id: "change-1", file_path: "a.ts", hunks: [] },
+        { id: "change-2", file_path: "b.ts", hunks: [] },
+      ],
+      unknown: [],
+    });
+    mockGetEmbeddingProvider.mockReturnValue({
+      embed: async () => { throw new Error("network timeout"); },
+    });
+
+    const result = await client.callTool({
+      name: "group_changes",
+      arguments: { change_ids: ["change-1", "change-2"] },
+    });
+    expect(result.isError).toBe(true);
+    expect((result.content as Array<{ text: string }>)[0].text).toBe("network timeout");
+  });
+
+  it("group_changes single change returns one group without embedding", async () => {
+    mockGetEmbeddingProvider.mockClear();
+    mockResolveChangeIds.mockReturnValue({
+      changes: [{ id: "change-1", file_path: "a.ts", hunks: [] }],
+      unknown: [],
+    });
+
+    const result = await client.callTool({
+      name: "group_changes",
+      arguments: { change_ids: ["change-1"] },
+    });
+    expect(result.isError).toBeUndefined();
+    const parsed = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(parsed.groups).toHaveLength(1);
+    expect(parsed.groups[0].change_ids).toEqual(["change-1"]);
+    expect(parsed.groups[0].summary).toBe("Changes in a.ts");
+    // Single change path skips embedding entirely
+    expect(mockGetEmbeddingProvider).not.toHaveBeenCalled();
+  });
+
   it("blame catch block returns isError on throw", async () => {
     mockGetBlame.mockImplementation(() => {
       throw new Error("no such path");
