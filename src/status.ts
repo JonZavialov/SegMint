@@ -5,19 +5,10 @@
  * ahead/behind counts, merge/rebase state) from git CLI commands.
  */
 
-import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { RepoStatus, HeadInfo, FileStatus } from "./models.js";
-
-// 10 MB — consistent with git.ts
-const MAX_BUFFER = 10 * 1024 * 1024;
-
-const EXEC_OPTS_BASE = {
-  encoding: "utf8" as const,
-  maxBuffer: MAX_BUFFER,
-  stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"],
-};
+import { execGit, tryExecGit } from "./exec-git.js";
 
 /**
  * Gather full repository status as a structured object.
@@ -29,23 +20,22 @@ const EXEC_OPTS_BASE = {
  */
 export function getRepoStatus(cwd?: string): RepoStatus {
   const dir = cwd ?? process.cwd();
-  const opts = { ...EXEC_OPTS_BASE, cwd: dir };
 
   // Resolve repo root
-  const rootPath = execGit(["rev-parse", "--show-toplevel"], opts).trim();
+  const rootPath = execGit(["rev-parse", "--show-toplevel"], dir).trim();
 
   // Resolve .git directory (needed for merge/rebase detection)
-  const gitDir = execGit(["rev-parse", "--git-dir"], opts).trim();
+  const gitDir = execGit(["rev-parse", "--git-dir"], dir).trim();
   // git rev-parse --git-dir returns a relative path; resolve it
   const absGitDir = join(dir, gitDir);
 
   // HEAD info
-  const head = resolveHead(opts);
+  const head = resolveHead(dir);
 
   // Porcelain status
   const porcelainOutput = execGit(
     ["status", "--porcelain=v1", "-b", "--untracked-files=normal"],
-    opts,
+    dir,
   );
   const { staged, unstaged, untracked, upstream, aheadBy, behindBy } =
     parsePorcelain(porcelainOutput);
@@ -75,59 +65,31 @@ export function getRepoStatus(cwd?: string): RepoStatus {
 }
 
 // ---------------------------------------------------------------------------
-// Internal helpers
+// Internal helpers (exported for testing)
 // ---------------------------------------------------------------------------
-
-/**
- * Run a git command and return stdout. Throws on failure.
- */
-function execGit(
-  args: string[],
-  opts: { encoding: "utf8"; cwd: string; maxBuffer: number; stdio: ["pipe", "pipe", "pipe"] },
-): string {
-  try {
-    return execFileSync("git", args, opts);
-  } catch (err) {
-    throwGitError(err);
-  }
-}
 
 /**
  * Resolve HEAD — branch name or detached SHA.
  */
-function resolveHead(
-  opts: { encoding: "utf8"; cwd: string; maxBuffer: number; stdio: ["pipe", "pipe", "pipe"] },
-): HeadInfo {
+function resolveHead(cwd: string): HeadInfo {
   // Try symbolic ref first (works when on a branch)
-  try {
-    const branchName = execFileSync(
-      "git",
-      ["symbolic-ref", "--short", "HEAD"],
-      opts,
-    ).trim();
+  const symResult = tryExecGit(["symbolic-ref", "--short", "HEAD"], cwd);
+  if (symResult.ok) {
+    const branchName = symResult.stdout.trim();
     // Also get the SHA for completeness
-    const sha = execFileSync(
-      "git",
-      ["rev-parse", "HEAD"],
-      opts,
-    ).trim();
+    const shaResult = tryExecGit(["rev-parse", "HEAD"], cwd);
+    const sha = shaResult.ok ? shaResult.stdout.trim() : undefined;
     return { type: "branch", name: branchName, sha };
-  } catch {
-    // Not on a branch — detached HEAD or fresh repo with no commits
   }
 
-  // Detached HEAD — get the SHA directly
-  try {
-    const sha = execFileSync(
-      "git",
-      ["rev-parse", "HEAD"],
-      opts,
-    ).trim();
-    return { type: "detached", sha };
-  } catch {
-    // Fresh repo with no commits at all — HEAD doesn't resolve
-    return { type: "branch", name: undefined, sha: undefined };
+  // Not on a branch — detached HEAD or fresh repo with no commits
+  const shaResult = tryExecGit(["rev-parse", "HEAD"], cwd);
+  if (shaResult.ok) {
+    return { type: "detached", sha: shaResult.stdout.trim() };
   }
+
+  // Fresh repo with no commits at all — HEAD doesn't resolve
+  return { type: "branch", name: undefined, sha: undefined };
 }
 
 /**
@@ -142,7 +104,7 @@ function resolveHead(
  *   XY <path>
  * where X = staging area status, Y = working tree status.
  */
-function parsePorcelain(output: string): {
+export function parsePorcelain(output: string): {
   staged: FileStatus[];
   unstaged: FileStatus[];
   untracked: string[];
@@ -202,7 +164,7 @@ function parsePorcelain(output: string): {
 /**
  * Parse the `## branch...upstream [ahead N, behind M]` header.
  */
-function parseBranchHeader(line: string): {
+export function parseBranchHeader(line: string): {
   upstream?: string;
   aheadBy?: number;
   behindBy?: number;
@@ -244,7 +206,7 @@ function parseBranchHeader(line: string): {
 /**
  * Map single-letter porcelain status codes to human-readable labels.
  */
-function statusCodeToLabel(code: string): string {
+export function statusCodeToLabel(code: string): string {
   switch (code) {
     case "M": return "modified";
     case "A": return "added";
@@ -255,25 +217,4 @@ function statusCodeToLabel(code: string): string {
     case "T": return "typechange";
     default: return code;
   }
-}
-
-/**
- * Inspect a git error and throw a descriptive message.
- * Mirrors the pattern in git.ts.
- */
-function throwGitError(err: unknown): never {
-  if (!(err instanceof Error)) throw err;
-
-  const stderr = "stderr" in err ? String((err as { stderr: unknown }).stderr).trim() : "";
-  const msg = stderr || err.message || "";
-
-  if (msg.includes("not a git repository")) {
-    throw new Error("Not a git repository");
-  }
-
-  if ("code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") {
-    throw new Error("git command not found. Please install git.");
-  }
-
-  throw new Error(msg || "Unknown git error");
 }

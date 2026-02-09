@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run build:*)",
+      "Bash(printf:*)",
+      "Bash(node build/index.js:*)",
+      "Bash(node -e \"const { spawn } = require\\(''child_process''\\); const p = spawn\\(''node'', [''build/index.js'']\\); let out = ''''; p.stdout.on\\(''data'', d => out += d.toString\\(\\)\\); p.stderr.on\\(''data'', \\(\\) => {}\\); p.stdin.write\\(JSON.stringify\\({jsonrpc:''2.0'',id:1,method:''initialize'',params:{protocolVersion:''2024-11-05'',capabilities:{},clientInfo:{name:''test'',version:''1.0.0''}}}\\) + ''\\\\n''\\); setTimeout\\(\\(\\) => { p.stdin.write\\(JSON.stringify\\({jsonrpc:''2.0'',method:''notifications/initialized''}\\) + ''\\\\n''\\); setTimeout\\(\\(\\) => { p.stdin.write\\(JSON.stringify\\({jsonrpc:''2.0'',id:2,method:''tools/list'',params:{}}\\) + ''\\\\n''\\); setTimeout\\(\\(\\) => { console.log\\(out\\); p.kill\\(\\); }, 1000\\); }, 500\\); }, 500\\);\")",
+      "Bash(node -e:*)",
+      "Bash(where:*)",
+      "Bash(dir \"C:\\\\Users\\\\jzavy\\\\Desktop\\\\SegMint\" /s)",
+      "Bash(git diff:*)",
+      "Bash(git -C \"C:\\\\Users\\\\jzavy\\\\Desktop\\\\SegMint\" diff HEAD)",
+      "Bash(python -c \" import sys, json for line in sys.stdin: line = line.strip\\(\\) if not line: continue try: obj = json.loads\\(line\\) if obj.get\\(''type''\\) == ''human'': msg = obj.get\\(''message'', {}\\) content = msg.get\\(''content'', ''''\\) if isinstance\\(content, str\\) and len\\(content\\) > 5: print\\(''HUMAN:'', content[:500]\\) elif isinstance\\(content, list\\): for c in content: if isinstance\\(c, dict\\) and c.get\\(''text''\\): print\\(''HUMAN:'', c[''text''][:500]\\) except: pass \")",
+      "Bash(python:*)",
+      "Bash(findstr:*)",
+      "Bash(dir:*)",
+      "Bash(npm install:*)",
+      "Bash(npx vitest:*)"
+    ]
+  }
+}

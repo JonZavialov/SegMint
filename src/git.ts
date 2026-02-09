@@ -6,11 +6,8 @@
  * changes, parses the unified diff output into typed Change/Hunk primitives.
  */
 
-import { execFileSync } from "node:child_process";
 import type { Change, Hunk } from "./models.js";
-
-// 10 MB — generous buffer for large diffs
-const MAX_BUFFER = 10 * 1024 * 1024;
+import { execGit, compareAscii } from "./exec-git.js";
 
 /**
  * Capture all uncommitted changes (staged + unstaged) as Change objects.
@@ -24,37 +21,16 @@ const MAX_BUFFER = 10 * 1024 * 1024;
  */
 export function getUncommittedChanges(cwd?: string): Change[] {
   const dir = cwd ?? process.cwd();
-  const execOpts = {
-    encoding: "utf8" as const,
-    cwd: dir,
-    maxBuffer: MAX_BUFFER,
-    stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"],
-  };
 
-  let stagedDiff: string;
-  let unstagedDiff: string;
+  const stagedDiff = execGit(
+    ["diff", "--cached", "--no-color", "--unified=3"],
+    dir,
+  );
 
-  try {
-    stagedDiff = execFileSync(
-      "git",
-      ["diff", "--cached", "--no-color", "--unified=3"],
-      execOpts,
-    );
-  } catch (err) {
-    throwGitError(err);
-    return []; // unreachable, satisfies TS
-  }
-
-  try {
-    unstagedDiff = execFileSync(
-      "git",
-      ["diff", "--no-color", "--unified=3"],
-      execOpts,
-    );
-  } catch (err) {
-    throwGitError(err);
-    return [];
-  }
+  const unstagedDiff = execGit(
+    ["diff", "--no-color", "--unified=3"],
+    dir,
+  );
 
   const staged = parseDiff(stagedDiff);
   const unstaged = parseDiff(unstagedDiff);
@@ -75,7 +51,7 @@ export function getUncommittedChanges(cwd?: string): Change[] {
   }
 
   // Sort by file path for deterministic IDs
-  const sortedPaths = [...merged.keys()].sort((a, b) => a.localeCompare(b));
+  const sortedPaths = [...merged.keys()].sort(compareAscii);
 
   return sortedPaths.map((filePath, index) => ({
     id: `change-${index + 1}`,
@@ -211,27 +187,4 @@ function parseHunks(chunk: string): Hunk[] {
   }
 
   return hunks;
-}
-
-/**
- * Inspect a git error and throw a descriptive message.
- */
-function throwGitError(err: unknown): never {
-  if (!(err instanceof Error)) throw err;
-
-  // execFileSync attaches stderr to the error object when the child process fails
-  const stderr = "stderr" in err ? String((err as { stderr: unknown }).stderr).trim() : "";
-  const msg = stderr || err.message || "";
-
-  // "not a git repository" appears in stderr from git
-  if (msg.includes("not a git repository")) {
-    throw new Error("Not a git repository");
-  }
-
-  // ENOENT means git binary was not found
-  if ("code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") {
-    throw new Error("git command not found. Please install git.");
-  }
-
-  throw new Error(msg || "Unknown git error");
 }

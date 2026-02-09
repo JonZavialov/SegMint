@@ -75,8 +75,9 @@ They exist only as references for MCP behavior. If something in them seems wrong
 
 ## Architecture Rules
 
-1. `src/index.ts` is always the MCP server entrypoint.
-2. Git mutation may ONLY occur inside MCP tool handlers. Never directly in agents.
+1. `src/index.ts` is the MCP server entrypoint. `src/server.ts` holds the `createServer()` factory with all tool registrations. This separation enables in-process testing.
+2. All git subprocess calls go through `src/exec-git.ts` (`execGit` for throwing, `tryExecGit` for non-throwing).
+3. Git mutation may ONLY occur inside MCP tool handlers. Never directly in agents.
 3. Agents reason over structured objects (Change, ChangeGroup, CommitPlan, PullRequestDraft). Never raw git output.
 4. stdout is reserved for MCP JSON-RPC. All logging goes to stderr via `console.error`.
 5. No god files. Keep modules small and focused.
@@ -135,20 +136,28 @@ All tools must follow these conventions:
 
 ```
 src/
-  index.ts        — MCP server entrypoint, tool registration
+  index.ts        — MCP server entrypoint (slim — imports createServer, connects stdio)
+  server.ts       — createServer() factory with all 9 tool registrations
+  exec-git.ts     — Centralized git command execution + error handling
   models.ts       — TypeScript interfaces for data models
   mock-data.ts    — Deterministic mock data (test contract for propose_commits, apply_commit, generate_pr)
   git.ts          — Git diff execution and unified diff parsing
   changes.ts      — Shared change-loading, ID resolution, embedding text builder
-  embeddings.ts   — Pluggable EmbeddingProvider interface + OpenAI implementation
+  embeddings.ts   — Pluggable EmbeddingProvider interface + OpenAI/Local implementations
   cluster.ts      — Cosine similarity + centroid-based greedy clustering
   history.ts      — Commit history retrieval (Tier 1 read-only)
   show.ts         — Single commit detail retrieval (Tier 1 read-only)
   diff.ts         — Ref-to-ref structured diff (Tier 1 read-only)
   status.ts       — Repository status gathering (Tier 1 read-only)
+tests/
+  unit/           — Unit tests for parsers, helpers, and isolated logic
+  integration/    — Integration tests against real temporary git repos
+  e2e/            — In-process E2E tests via createServer() + InMemoryTransport
+  fixtures/       — Test fixture files (diffs, porcelain output, etc.)
 typescript-sdk/   — Local copy of MCP TypeScript SDK (READ-ONLY)
 llms-full.txt     — MCP protocol documentation (READ-ONLY)
 build/            — Compiled output (gitignored)
+.github/workflows/ — CI configuration
 ```
 
 ## Stack
@@ -170,11 +179,16 @@ Current dependencies:
 - `@modelcontextprotocol/sdk` — MCP server framework
 - `zod` — schema validation
 
+Dev dependencies:
+- `vitest` — test framework
+- `@vitest/coverage-v8` — V8 code coverage provider
+
 ## Environment Variables
 
 | Variable | Required by | Description |
 |---|---|---|
 | `OPENAI_API_KEY` | `group_changes` | OpenAI API key for text-embedding-3-small. If not set, `group_changes` returns a structured error explaining how to set it. |
+| `SEGMINT_EMBEDDING_PROVIDER` | `group_changes` (optional) | Set to `"local"` to use the offline SHA-256-based LocalEmbeddingProvider instead of OpenAI. Used by tests and development. |
 
 ## Build and Run
 
@@ -184,15 +198,33 @@ npm run build    # tsc
 npm start        # node build/index.js (stdio)
 ```
 
+### Test Commands
+
+```bash
+npm test              # Run all tests
+npm run test:unit     # Unit tests only
+npm run test:integration  # Integration tests only (requires git)
+npm run test:e2e      # E2E tests only
+npm run test:coverage # All tests with coverage report
+npm run test:watch    # Watch mode
+```
+
+All tests run fully offline with `SEGMINT_EMBEDDING_PROVIDER=local` (set automatically in CI).
+
 ## Testing Requirements
 
 **Every change must be validated.** No exceptions.
 
+### Automated test suite
+
+The project has a comprehensive Vitest test suite with 95%+ coverage enforcement:
+
 1. `npm run build` must succeed with zero errors.
-2. Start the MCP server and confirm it responds to `initialize`.
-3. Call `tools/list` and verify all 9 tools are present.
-4. Call `list_changes` and verify structured output.
-5. Call at least one additional tool.
+2. `npm run test:coverage` must pass with all thresholds met (95% statements, branches, functions, lines).
+3. New tools or logic changes must include corresponding tests.
+4. Coverage must not regress — if you add code, add tests to cover it.
+
+### Manual smoke test (optional, for protocol-level changes)
 
 If MCP behavior changes, provide example JSON-RPC payloads in the PR or commit message.
 

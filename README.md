@@ -203,13 +203,15 @@ All models are defined in `src/models.ts`.
 
 ```
 src/
-  index.ts        MCP server entrypoint. Registers all 9 tools and starts stdio transport.
+  index.ts        MCP server entrypoint (slim — imports createServer, connects stdio).
+  server.ts       createServer() factory with all 9 tool registrations.
+  exec-git.ts     Centralized git command execution + error handling.
   models.ts       TypeScript interfaces for all data models (Change, RepoStatus, etc.).
   git.ts          Executes git diff commands, parses unified diff format into Change objects.
   changes.ts      Shared change-loading helper. Single source of truth for ID assignment.
                   Also builds embedding text and resolves change IDs.
-  embeddings.ts   Pluggable EmbeddingProvider interface. Ships with OpenAI implementation
-                  using text-embedding-3-small.
+  embeddings.ts   Pluggable EmbeddingProvider interface. Ships with OpenAI and Local
+                  (SHA-256-based offline) implementations.
   cluster.ts      Cosine similarity function and centroid-based greedy clustering algorithm.
   history.ts      Commit history retrieval — Tier 1 read-only, NUL-delimited parsing.
   show.ts         Single commit detail retrieval — Tier 1 read-only, reuses parseDiff.
@@ -218,9 +220,16 @@ src/
   mock-data.ts    Deterministic mock data for propose_commits, apply_commit, generate_pr.
                   Part of the test contract — IDs are relied on by smoke tests.
 
+tests/
+  unit/           Unit tests for parsers, helpers, and isolated logic.
+  integration/    Integration tests against real temporary git repos.
+  e2e/            In-process E2E tests via createServer() + InMemoryTransport.
+  fixtures/       Test fixture files (diffs, etc.).
+
 typescript-sdk/   Local copy of the MCP TypeScript SDK (read-only reference).
 llms-full.txt     MCP protocol documentation (read-only reference).
 build/            Compiled JavaScript output (gitignored).
+.github/workflows/ CI configuration (GitHub Actions).
 ```
 
 ## Environment Variables
@@ -228,6 +237,7 @@ build/            Compiled JavaScript output (gitignored).
 | Variable | Required | Description |
 |---|---|---|
 | `OPENAI_API_KEY` | Yes (for `group_changes` with 2+ changes) | OpenAI API key for `text-embedding-3-small`. If not set, `group_changes` returns a structured MCP error with setup instructions. Single-change calls work without it. |
+| `SEGMINT_EMBEDDING_PROVIDER` | No | Set to `"local"` to use the offline SHA-256-based `LocalEmbeddingProvider` instead of OpenAI. No API key needed. Used for testing and development. |
 
 ## Running Locally
 
@@ -354,10 +364,33 @@ These rules are enforced via CLAUDE.md and apply to all contributors (human or A
 - Mock data IDs (`change-1`, `group-1`, `commit-1`, etc.) are part of the test contract. Do not change them without updating tests.
 - No new npm dependencies without explicit justification.
 
+## Testing
+
+Segmint has a comprehensive Vitest test suite with 95%+ coverage enforcement across all metrics.
+
+```bash
+npm test              # Run all tests
+npm run test:unit     # Unit tests only
+npm run test:integration  # Integration tests (requires git CLI)
+npm run test:e2e      # E2E tests (in-process via InMemoryTransport)
+npm run test:coverage # All tests with V8 coverage report
+npm run test:watch    # Watch mode for development
+```
+
+All tests run fully offline using `SEGMINT_EMBEDDING_PROVIDER=local`. No OpenAI API key is needed to run the test suite.
+
+| Embedding Provider | Env Variable | Use Case |
+|---|---|---|
+| `LocalEmbeddingProvider` | `SEGMINT_EMBEDDING_PROVIDER=local` | Testing, offline development |
+| `OpenAIEmbeddingProvider` | `OPENAI_API_KEY=sk-...` | Production, real semantic similarity |
+
+CI runs on both Ubuntu and Windows via GitHub Actions on every push and pull request.
+
 ## Stack
 
 - TypeScript (strict mode, ESM)
 - `@modelcontextprotocol/sdk@1.26.0`
 - `zod@3.x`
+- `vitest` + `@vitest/coverage-v8` (dev)
 - Node.js 20+
 - stdio transport

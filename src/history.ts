@@ -5,17 +5,8 @@
  * format for safe parsing. No mutation, no LLM involvement.
  */
 
-import { execFileSync } from "node:child_process";
 import type { LogCommit } from "./models.js";
-
-// 10 MB — consistent with git.ts and status.ts
-const MAX_BUFFER = 10 * 1024 * 1024;
-
-const EXEC_OPTS_BASE = {
-  encoding: "utf8" as const,
-  maxBuffer: MAX_BUFFER,
-  stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"],
-};
+import { execGit } from "./exec-git.js";
 
 export interface GetLogArgs {
   limit?: number;
@@ -35,9 +26,6 @@ export interface GetLogArgs {
  * @throws Error with descriptive message if not a git repo, bad ref, or bad path
  */
 export function getLog(args: GetLogArgs): { commits: LogCommit[] } {
-  const dir = process.cwd();
-  const opts = { ...EXEC_OPTS_BASE, cwd: dir };
-
   const ref = args.ref ?? "HEAD";
 
   // Clamp limit to 1..200, default 20
@@ -70,19 +58,13 @@ export function getLog(args: GetLogArgs): { commits: LogCommit[] } {
     argv.push("--", args.path);
   }
 
-  let raw: string;
-  try {
-    raw = execFileSync("git", argv, opts);
-  } catch (err) {
-    throwGitError(err);
-  }
-
+  const raw = execGit(argv);
   const commits = parseLogOutput(raw);
   return { commits };
 }
 
 // ---------------------------------------------------------------------------
-// Internal helpers
+// Internal helpers (exported for testing)
 // ---------------------------------------------------------------------------
 
 /**
@@ -92,7 +74,7 @@ export function getLog(args: GetLogArgs): { commits: LogCommit[] } {
  * separated by single NUL (\0): sha, short_sha, subject, author_name,
  * author_email, author_date, parents.
  */
-function parseLogOutput(raw: string): LogCommit[] {
+export function parseLogOutput(raw: string): LogCommit[] {
   if (raw.trim().length === 0) return [];
 
   // Split on double-NUL record separator
@@ -125,25 +107,4 @@ function parseLogOutput(raw: string): LogCommit[] {
   }
 
   return commits;
-}
-
-/**
- * Inspect a git error and throw a descriptive message.
- * Mirrors the pattern in status.ts and git.ts.
- */
-function throwGitError(err: unknown): never {
-  if (!(err instanceof Error)) throw err;
-
-  const stderr = "stderr" in err ? String((err as { stderr: unknown }).stderr).trim() : "";
-  const msg = stderr || err.message || "";
-
-  if (msg.includes("not a git repository")) {
-    throw new Error("Not a git repository");
-  }
-
-  if ("code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") {
-    throw new Error("git command not found. Please install git.");
-  }
-
-  throw new Error(msg || "Unknown git error");
 }

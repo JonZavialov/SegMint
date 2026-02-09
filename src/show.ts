@@ -6,18 +6,9 @@
  * pipeline from git.ts.
  */
 
-import { execFileSync } from "node:child_process";
 import type { CommitDetail, FileStatus, Change } from "./models.js";
 import { parseDiff } from "./git.js";
-
-// 10 MB — consistent with git.ts, status.ts, history.ts
-const MAX_BUFFER = 10 * 1024 * 1024;
-
-const EXEC_OPTS_BASE = {
-  encoding: "utf8" as const,
-  maxBuffer: MAX_BUFFER,
-  stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"],
-};
+import { execGit, compareAscii } from "./exec-git.js";
 
 /**
  * Retrieve full details for a single commit.
@@ -30,26 +21,19 @@ const EXEC_OPTS_BASE = {
  * @throws Error with descriptive message if sha is unknown, not a git repo, etc.
  */
 export function getCommit(sha: string): { commit: CommitDetail } {
-  const dir = process.cwd();
-  const opts = { ...EXEC_OPTS_BASE, cwd: dir };
-
   // 1. Metadata via NUL-delimited format
-  const metaRaw = execGit(
-    [
-      "show", "-s",
-      "--date=iso-strict",
-      "--pretty=format:%H%x00%h%x00%s%x00%b%x00%an%x00%ae%x00%ad%x00%cn%x00%ce%x00%cd%x00%P",
-      sha,
-    ],
-    opts,
-  );
+  const metaRaw = execGit([
+    "show", "-s",
+    "--date=iso-strict",
+    "--pretty=format:%H%x00%h%x00%s%x00%b%x00%an%x00%ae%x00%ad%x00%cn%x00%ce%x00%cd%x00%P",
+    sha,
+  ]);
 
   const meta = parseMetadata(metaRaw);
 
   // 2. Name-status for affected files
   const nameStatusRaw = execGit(
     ["show", "--name-status", "--pretty=format:", sha],
-    opts,
   );
   const files = parseNameStatus(nameStatusRaw);
 
@@ -59,20 +43,18 @@ export function getCommit(sha: string): { commit: CommitDetail } {
     // Root commit: no parent to diff against, use git show for diff
     diffRaw = execGit(
       ["show", sha, "--no-color", "--unified=3", "--pretty=format:"],
-      opts,
     );
   } else {
     // Normal commit: diff against parent(s)
     diffRaw = execGit(
       ["diff", `${sha}^!`, "--no-color", "--unified=3"],
-      opts,
     );
   }
 
   const parsed = parseDiff(diffRaw);
   const sortedPaths = parsed
     .map((e) => e.file_path)
-    .sort((a, b) => a.localeCompare(b));
+    .sort(compareAscii);
 
   const pathToEntry = new Map(parsed.map((e) => [e.file_path, e]));
   const changes: Change[] = sortedPaths.map((fp, idx) => ({
@@ -101,7 +83,7 @@ export function getCommit(sha: string): { commit: CommitDetail } {
 }
 
 // ---------------------------------------------------------------------------
-// Internal helpers
+// Internal helpers (exported for testing)
 // ---------------------------------------------------------------------------
 
 interface CommitMeta {
@@ -126,7 +108,7 @@ interface CommitMeta {
  * for the first 3 fields, then from the right for the last 7 fields,
  * and everything in between is the body.
  */
-function parseMetadata(raw: string): CommitMeta {
+export function parseMetadata(raw: string): CommitMeta {
   // Split on NUL
   const parts = raw.split("\0");
 
@@ -183,7 +165,7 @@ function parseParents(raw: string): string[] {
  *
  * Each non-empty line: <status>\t<path> (or <status>\t<old>\t<new> for renames)
  */
-function parseNameStatus(raw: string): FileStatus[] {
+export function parseNameStatus(raw: string): FileStatus[] {
   const files: FileStatus[] = [];
   const lines = raw.split("\n").filter((l) => l.length > 0);
 
@@ -194,7 +176,7 @@ function parseNameStatus(raw: string): FileStatus[] {
     const statusCode = parts[0].trim();
     // For renames/copies (R100, C100), use the new path
     const path = parts.length >= 3 ? parts[2] : parts[1];
-    files.push({ path, status: statusCodeToLabel(statusCode) });
+    files.push({ path, status: showStatusCodeToLabel(statusCode) });
   }
 
   return files;
@@ -204,7 +186,7 @@ function parseNameStatus(raw: string): FileStatus[] {
  * Map git status codes to human-readable labels.
  * Consistent with status.ts.
  */
-function statusCodeToLabel(code: string): string {
+export function showStatusCodeToLabel(code: string): string {
   // Handle R100, C100 etc — take just the letter
   const letter = code[0];
   switch (letter) {
@@ -217,39 +199,4 @@ function statusCodeToLabel(code: string): string {
     case "T": return "typechange";
     default: return code;
   }
-}
-
-/**
- * Run a git command and return stdout. Throws on failure.
- */
-function execGit(
-  args: string[],
-  opts: { encoding: "utf8"; cwd: string; maxBuffer: number; stdio: ["pipe", "pipe", "pipe"] },
-): string {
-  try {
-    return execFileSync("git", args, opts);
-  } catch (err) {
-    throwGitError(err);
-  }
-}
-
-/**
- * Inspect a git error and throw a descriptive message.
- * Mirrors the pattern in status.ts, history.ts, git.ts.
- */
-function throwGitError(err: unknown): never {
-  if (!(err instanceof Error)) throw err;
-
-  const stderr = "stderr" in err ? String((err as { stderr: unknown }).stderr).trim() : "";
-  const msg = stderr || err.message || "";
-
-  if (msg.includes("not a git repository")) {
-    throw new Error("Not a git repository");
-  }
-
-  if ("code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") {
-    throw new Error("git command not found. Please install git.");
-  }
-
-  throw new Error(msg || "Unknown git error");
 }

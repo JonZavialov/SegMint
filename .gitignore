@@ -1,5 +1,6 @@
 node_modules
 build
+coverage
 typescript-sdk
 llms-full.txt
 .env
