@@ -227,46 +227,100 @@ describe("MCP server E2E (in-process)", () => {
     try { rmSync(join(dir, "gc-b.txt")); } catch { /* ignore */ }
   });
 
-  it("propose_commits with valid mock IDs", async () => {
-    const result = await client.callTool({
-      name: "propose_commits",
-      arguments: { group_ids: ["group-1", "group-2"] },
+  it("propose_commits full pipeline (real)", async () => {
+    // Create a staged change
+    writeFileSync(join(dir, "propose-test.txt"), "propose content\n");
+    execFileSync("git", ["add", "propose-test.txt"], { cwd: dir });
+
+    // list_changes → group_changes → propose_commits
+    const listResult = await client.callTool({ name: "list_changes", arguments: {} });
+    const changes = (listResult.structuredContent as { changes: Array<{ id: string }> }).changes;
+    const changeIds = changes.map((c) => c.id);
+
+    const groupResult = await client.callTool({
+      name: "group_changes",
+      arguments: { change_ids: changeIds },
     });
-    expect(result.isError).toBeFalsy();
-    const sc = result.structuredContent as { commits: unknown[] };
+    expect(groupResult.isError).toBeFalsy();
+    const groups = (groupResult.structuredContent as { groups: Array<{ id: string }> }).groups;
+
+    const proposeResult = await client.callTool({
+      name: "propose_commits",
+      arguments: { group_ids: groups.map((g) => g.id) },
+    });
+    expect(proposeResult.isError).toBeFalsy();
+    const sc = proposeResult.structuredContent as { commits: Array<{ id: string; title: string }> };
     expect(sc.commits.length).toBeGreaterThanOrEqual(1);
+    expect(sc.commits[0].id).toMatch(/^commit-[0-9a-f]{8}$/);
+
+    // Cleanup
+    execFileSync("git", ["reset", "HEAD", "propose-test.txt"], { cwd: dir });
+    try { rmSync(join(dir, "propose-test.txt")); } catch { /* ignore */ }
   });
 
   it("propose_commits with unknown IDs returns error", async () => {
     const result = await client.callTool({
       name: "propose_commits",
-      arguments: { group_ids: ["bad-group"] },
+      arguments: { group_ids: ["group-nonexistent"] },
     });
     expect(result.isError).toBe(true);
   });
 
-  it("apply_commit with valid mock ID", async () => {
+  it("apply_commit with confirm=true, dry_run=true returns preview", async () => {
+    writeFileSync(join(dir, "apply-test.txt"), "apply content\n");
+    execFileSync("git", ["add", "apply-test.txt"], { cwd: dir });
+
+    const listResult = await client.callTool({ name: "list_changes", arguments: {} });
+    const changes = (listResult.structuredContent as { changes: Array<{ id: string }> }).changes;
+    const groupResult = await client.callTool({
+      name: "group_changes",
+      arguments: { change_ids: changes.map((c) => c.id) },
+    });
+    const groups = (groupResult.structuredContent as { groups: Array<{ id: string }> }).groups;
+    const proposeResult = await client.callTool({
+      name: "propose_commits",
+      arguments: { group_ids: groups.map((g) => g.id) },
+    });
+    const commits = (proposeResult.structuredContent as { commits: Array<{ id: string }> }).commits;
+
     const result = await client.callTool({
       name: "apply_commit",
-      arguments: { commit_id: "commit-1" },
+      arguments: { commit_id: commits[0].id, confirm: true, dry_run: true },
     });
     expect(result.isError).toBeFalsy();
-    const sc = result.structuredContent as { success: boolean };
+    const sc = result.structuredContent as { success: boolean; dry_run: boolean };
     expect(sc.success).toBe(true);
+    expect(sc.dry_run).toBe(true);
+
+    // Cleanup
+    execFileSync("git", ["reset", "HEAD", "apply-test.txt"], { cwd: dir });
+    try { rmSync(join(dir, "apply-test.txt")); } catch { /* ignore */ }
+  });
+
+  it("apply_commit with confirm=false returns error", async () => {
+    const result = await client.callTool({
+      name: "apply_commit",
+      arguments: { commit_id: "commit-abc", confirm: false },
+    });
+    expect(result.isError).toBe(true);
+    const text = (result.content as Array<{ text: string }>)[0].text;
+    expect(text).toContain("confirm must be true");
   });
 
   it("apply_commit with unknown ID returns error", async () => {
     const result = await client.callTool({
       name: "apply_commit",
-      arguments: { commit_id: "bad-commit" },
+      arguments: { commit_id: "commit-nonexistent", confirm: true, dry_run: true },
     });
     expect(result.isError).toBe(true);
   });
 
-  it("generate_pr with valid mock IDs", async () => {
+  it("generate_pr with real commit SHAs", async () => {
+    // Get real SHAs from the test repo
+    const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf8" }).trim();
     const result = await client.callTool({
       name: "generate_pr",
-      arguments: { commit_ids: ["commit-1", "commit-2"] },
+      arguments: { commit_shas: [sha] },
     });
     expect(result.isError).toBeFalsy();
     const sc = result.structuredContent as { title: string; description: string };
@@ -335,10 +389,10 @@ describe("MCP server E2E (in-process)", () => {
     expect(sc.lines[0].line_number).toBe(1);
   });
 
-  it("generate_pr with unknown IDs returns error", async () => {
+  it("generate_pr with invalid SHA returns error", async () => {
     const result = await client.callTool({
       name: "generate_pr",
-      arguments: { commit_ids: ["bad-commit"] },
+      arguments: { commit_shas: ["not-valid!"] },
     });
     expect(result.isError).toBe(true);
   });

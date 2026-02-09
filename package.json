@@ -1,6 +1,6 @@
 {
   "name": "segmint",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "A semantic Git runtime for AI agents — exposes repository state as structured, typed primitives over MCP.",
   "bin": {
     "segmint": "./build/index.js"
@@ -13,7 +13,8 @@
     "test:integration": "vitest run tests/integration",
     "test:e2e": "vitest run tests/e2e",
     "test:coverage": "vitest run --coverage",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build && npm run test:coverage"
   },
   "files": [
     "build"

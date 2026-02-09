@@ -46,10 +46,10 @@ Segmint runs as a stdio-based MCP server. An AI agent connects over stdin/stdout
 | `show_commit` | 1 | Real | Full commit details — metadata, affected files, and structured diff |
 | `diff_between_refs` | 1 | Real | Structured diff between any two refs with optional path filtering |
 | `blame` | 1 | Real | Line-level attribution — commit SHA, author, timestamp, summary per line |
-| `group_changes` | — | Real | Cluster changes by semantic similarity into `ChangeGroup[]` |
-| `propose_commits` | — | Mocked | Propose a commit sequence from change groups |
-| `apply_commit` | — | Mocked | Stage and commit files for a given commit plan |
-| `generate_pr` | — | Mocked | Generate a pull request draft from commits |
+| `group_changes` | — | Real | Cluster changes by semantic similarity into `ChangeGroup[]` (content-derived stable IDs) |
+| `propose_commits` | — | Real | Deterministic commit planning from change groups |
+| `apply_commit` | — | Real | Stage and commit files with safety guardrails (confirm, dry_run, expected_head_sha) |
+| `generate_pr` | — | Real | Generate a pull request draft from real commit SHAs |
 
 ### repo_status
 
@@ -133,6 +133,39 @@ Clusters changes by semantic similarity using embeddings.
 - Single-change input skips embeddings and returns one group directly
 - Requires `OPENAI_API_KEY` (returns structured error if missing)
 
+### propose_commits
+
+Proposes a sequence of commits from change groups.
+
+- Input: `{ group_ids: string[] }` — IDs from `group_changes`
+- Recomputes all groups from current repo state (stateless)
+- Validates group IDs against computed groups (content-derived stable IDs)
+- Returns one `CommitPlan` per group with heuristic titles from file paths
+- Commit IDs are content-derived (stable across calls with same membership)
+
+### apply_commit
+
+Stages and commits files for a proposed commit plan.
+
+- Input: `{ commit_id, confirm, dry_run?, expected_head_sha?, message_override?, allow_staged? }`
+- **Safety guardrails:**
+  - `confirm: true` required — safety gate
+  - `dry_run: true` (default) — preview without mutation
+  - `expected_head_sha` — optimistic concurrency guard
+  - `allow_staged: false` (default) — fails if staged changes exist outside scope
+  - Fails during merge/rebase conflicts
+- Recomputes pipeline to find matching commit plan by stable ID
+- Returns `ApplyCommitResult` with committed paths, message, and (if real commit) SHA
+
+### generate_pr
+
+Generates a PR draft from real commit SHAs.
+
+- Input: `{ commit_shas: string[] }` — hex format, 4+ chars
+- Validates SHA format (hex only, no symbolic refs)
+- Uses `git show` to retrieve commit metadata and file lists
+- Returns `PullRequestDraft` with markdown description, commit list, and files changed
+
 ## Architecture
 
 ### MCP Server Model
@@ -210,6 +243,12 @@ All models are defined in `src/models.ts`.
 { sha, short_sha, author_name, author_email, author_time, summary }
 ```
 
+**ApplyCommitResult** — result of applying a commit plan.
+```
+{ success: boolean, dry_run: boolean, commit_sha?: string,
+  committed_paths: string[], message: string }
+```
+
 ### Pipeline Status
 
 | Stage | Status | Implementation |
@@ -225,9 +264,9 @@ All models are defined in `src/models.ts`.
 | Embedding vectors | Real | OpenAI `text-embedding-3-small` via pluggable `EmbeddingProvider` |
 | Clustering | Real | Centroid-based greedy cosine similarity (threshold 0.80) |
 | Group summaries | Heuristic | File-path-based summaries (LLM summaries planned) |
-| Commit planning | Mocked | Returns deterministic mock data |
-| Commit execution | Mocked | Returns `{ success: true }` |
-| PR generation | Mocked | Returns deterministic mock data |
+| Commit planning | Real (heuristic) | Deterministic 1:1 group→commit mapping with file-path-based titles |
+| Commit execution | Real | Real `git add` + `git commit` with safety guardrails (confirm, dry_run, expected_head_sha) |
+| PR generation | Real | Draft from real commit SHAs via `git show` metadata |
 
 ## Directory Structure
 
@@ -238,18 +277,20 @@ src/
   exec-git.ts     Centralized git command execution + error handling.
   models.ts       TypeScript interfaces for all data models (Change, RepoStatus, etc.).
   git.ts          Executes git diff commands, parses unified diff format into Change objects.
-  changes.ts      Shared change-loading helper. Single source of truth for ID assignment.
-                  Also builds embedding text and resolves change IDs.
+  changes.ts      Shared change-loading, ID resolution, embedding text, embedAndCluster,
+                  computeGroups, and contentHash. Single source of truth for change and
+                  group computation.
   embeddings.ts   Pluggable EmbeddingProvider interface. Ships with OpenAI and Local
                   (SHA-256-based offline) implementations.
   cluster.ts      Cosine similarity function and centroid-based greedy clustering algorithm.
+  propose.ts      Deterministic commit planning from ChangeGroups (downstream consumer).
+  apply.ts        Real git staging + commit with safety guardrails (downstream consumer).
+  generate-pr.ts  PR draft generation from real commit SHAs (downstream consumer).
   history.ts      Commit history retrieval — Tier 1 read-only, NUL-delimited parsing.
   show.ts         Single commit detail retrieval — Tier 1 read-only, reuses parseDiff.
   diff.ts         Ref-to-ref structured diff — Tier 1 read-only, reuses parseDiff.
   blame.ts        Line-level blame attribution — Tier 1 read-only, porcelain parsing.
   status.ts       Repository status gathering — Tier 1 read-only repo intelligence.
-  mock-data.ts    Deterministic mock data for propose_commits, apply_commit, generate_pr.
-                  Part of the test contract — IDs are relied on by smoke tests.
 
 tests/
   unit/           Unit tests for parsers, helpers, and isolated logic.
@@ -316,13 +357,13 @@ npm start
 
 **Substrate, not application.** Segmint provides structured Git primitives for agents. Commit planning, PR generation, and workflow automation are downstream consumers — they use the substrate but do not define it.
 
-**Determinism.** Changes are sorted by file path before ID assignment. Clustering processes inputs in sorted order. Group IDs are assigned sequentially. Given the same diff and embeddings, the output is identical.
+**Determinism.** Changes are sorted by file path before ID assignment. Clustering processes inputs in sorted order. Group and commit IDs are content-derived (SHA-256 hash of sorted membership), making them stable across calls with the same underlying changes. Given the same diff and embeddings, the output is identical.
 
 **MCP stdout hygiene.** stdout is reserved exclusively for JSON-RPC protocol messages. All diagnostic output goes to stderr via `console.error`. No banners, no startup messages on stdout.
 
 **Pluggable embeddings.** The `EmbeddingProvider` interface decouples clustering from any specific API. The default implementation calls OpenAI, but the interface can be swapped without touching clustering or tool logic.
 
-**Real data before agents.** Each pipeline stage is implemented with real data before adding LLM-powered agents on top. Mocked tools are explicitly labeled and return deterministic data.
+**Real data, no mocks.** All 10 MCP tools operate on real git data. Group summaries and commit titles use heuristics (LLM integration planned). No mock data in production code.
 
 **No speculative abstraction.** Code is written for the current requirement. Helpers are introduced only when shared by multiple callers. Three similar lines are better than a premature abstraction.
 
@@ -364,15 +405,20 @@ Operations like `push`, `rebase`, `reset --hard`, `force push`, and history rewr
 
 | Phase | Status | Scope |
 |---|---|---|
-| Phase 1 | Complete | MCP skeleton, tool registration, mock data |
+| Phase 1 | Complete | MCP skeleton, tool registration |
 | Phase 2 | Complete | Real git diff parsing — structured Change objects |
 | Phase 3 | Complete | Embeddings + clustering — semantic ChangeGroups |
-| Phase 4 | Planned | LLM-powered group summaries and commit planning |
-| Phase 5 | Planned | Real git staging/commit execution + PR generation |
-| Phase 6 | Planned | Tier 1 read-only repo intelligence tools |
-| Phase 7 | Planned | Tier 2 workspace mutation tools with guardrails |
+| Tier 1 | Complete | Read-only repo intelligence tools (repo_status, log, show_commit, diff_between_refs, blame) |
+| Downstream | Complete | Real propose_commits, apply_commit, generate_pr (v0.1) |
 
-Phases are sequential. Each builds on the previous one. Tier 1 and Tier 2 tools define the substrate's capability coverage. Commit and PR tooling (Phases 4–5) are downstream consumers that will be restructured to operate on Tier 1/2 primitives as they become available.
+### Post-v0.1 Roadmap
+
+| Priority | Scope |
+|---|---|
+| Next | LLM-powered group summaries and commit messages (replace heuristics) |
+| Next | Tier 1 expansion: `list_branches`, `list_tags`, `list_remotes` |
+| Later | Tier 2: workspace mutation tools with guardrails |
+| Later | Tier 3: irreversible operations with safety gating |
 
 ## Non-Goals (for now)
 
@@ -393,7 +439,6 @@ These rules are enforced via CLAUDE.md and apply to all contributors (human or A
 - stdout contains only JSON-RPC. All logging goes to stderr.
 - All tools return structured MCP errors (`{ isError: true }`) on failure. No thrown exceptions reach the client.
 - `execFileSync` uses a 10 MB buffer to handle large diffs without crashing.
-- Mock data IDs (`change-1`, `group-1`, `commit-1`, etc.) are part of the test contract. Do not change them without updating tests.
 - No new npm dependencies without explicit justification.
 
 ## Testing

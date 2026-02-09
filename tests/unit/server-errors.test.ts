@@ -6,23 +6,26 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
  * Test server.ts error catch blocks that can't easily be triggered in E2E tests.
  *
  * Mocks the underlying modules to throw, exercising the try/catch error paths
- * in list_changes, repo_status, and group_changes handlers.
+ * in all tool handlers.
  */
 
 // Mock modules to throw errors on demand
 const mockLoadChanges = vi.fn();
 const mockResolveChangeIds = vi.fn();
+const mockEmbedAndCluster = vi.fn();
 const mockGetRepoStatus = vi.fn();
 const mockGetLog = vi.fn();
 const mockGetCommit = vi.fn();
 const mockGetDiffBetweenRefs = vi.fn();
 const mockGetBlame = vi.fn();
-const mockGetEmbeddingProvider = vi.fn();
+const mockProposeCommits = vi.fn();
+const mockApplyCommit = vi.fn();
+const mockGeneratePr = vi.fn();
 
 vi.mock("../../src/changes.js", () => ({
   loadChanges: (...args: unknown[]) => mockLoadChanges(...args),
   resolveChangeIds: (...args: unknown[]) => mockResolveChangeIds(...args),
-  buildEmbeddingText: vi.fn((c: { file_path: string }) => `file: ${c.file_path}`),
+  embedAndCluster: (...args: unknown[]) => mockEmbedAndCluster(...args),
 }));
 
 vi.mock("../../src/status.js", () => ({
@@ -45,12 +48,16 @@ vi.mock("../../src/blame.js", () => ({
   getBlame: (...args: unknown[]) => mockGetBlame(...args),
 }));
 
-vi.mock("../../src/embeddings.js", () => ({
-  getEmbeddingProvider: (...args: unknown[]) => mockGetEmbeddingProvider(...args),
+vi.mock("../../src/propose.js", () => ({
+  proposeCommits: (...args: unknown[]) => mockProposeCommits(...args),
 }));
 
-vi.mock("../../src/cluster.js", () => ({
-  clusterByThreshold: vi.fn(),
+vi.mock("../../src/apply.js", () => ({
+  applyCommit: (...args: unknown[]) => mockApplyCommit(...args),
+}));
+
+vi.mock("../../src/generate-pr.js", () => ({
+  generatePr: (...args: unknown[]) => mockGeneratePr(...args),
 }));
 
 describe("server.ts error catch blocks", () => {
@@ -70,6 +77,8 @@ describe("server.ts error catch blocks", () => {
   afterAll(async () => {
     await client.close();
   });
+
+  // ---- list_changes ----
 
   it("list_changes catch block returns isError on throw", async () => {
     mockLoadChanges.mockImplementation(() => {
@@ -99,6 +108,8 @@ describe("server.ts error catch blocks", () => {
     expect(text).toBe("string error");
   });
 
+  // ---- repo_status ----
+
   it("repo_status catch block returns isError on throw", async () => {
     mockGetRepoStatus.mockImplementation(() => {
       throw new Error("not a git repo");
@@ -127,6 +138,8 @@ describe("server.ts error catch blocks", () => {
     expect(text).toBe("42");
   });
 
+  // ---- log ----
+
   it("log catch block returns isError on throw", async () => {
     mockGetLog.mockImplementation(() => {
       throw new Error("bad ref");
@@ -153,6 +166,8 @@ describe("server.ts error catch blocks", () => {
     expect((result.content as Array<{ text: string }>)[0].text).toBe("log string error");
   });
 
+  // ---- show_commit ----
+
   it("show_commit catch block returns isError on throw", async () => {
     mockGetCommit.mockImplementation(() => {
       throw new Error("unknown sha");
@@ -177,6 +192,8 @@ describe("server.ts error catch blocks", () => {
     expect(result.isError).toBe(true);
     expect((result.content as Array<{ text: string }>)[0].text).toBe("show string error");
   });
+
+  // ---- diff_between_refs ----
 
   it("diff_between_refs catch block returns isError on throw", async () => {
     mockGetDiffBetweenRefs.mockImplementation(() => {
@@ -203,8 +220,9 @@ describe("server.ts error catch blocks", () => {
     expect((result.content as Array<{ text: string }>)[0].text).toBe("diff string error");
   });
 
-  it("group_changes catch block on embedding failure", async () => {
-    // Make resolveChangeIds return valid changes (no unknowns) with 2+ items
+  // ---- group_changes ----
+
+  it("group_changes catch block on embedAndCluster failure", async () => {
     mockResolveChangeIds.mockReturnValue({
       changes: [
         { id: "change-1", file_path: "a.ts", hunks: [] },
@@ -212,10 +230,7 @@ describe("server.ts error catch blocks", () => {
       ],
       unknown: [],
     });
-    // Make embedding provider throw
-    mockGetEmbeddingProvider.mockImplementation(() => {
-      throw new Error("OPENAI_API_KEY not set");
-    });
+    mockEmbedAndCluster.mockRejectedValue(new Error("OPENAI_API_KEY not set"));
 
     const result = await client.callTool({
       name: "group_changes",
@@ -234,9 +249,7 @@ describe("server.ts error catch blocks", () => {
       ],
       unknown: [],
     });
-    mockGetEmbeddingProvider.mockImplementation(() => {
-      throw "group string error";
-    });
+    mockEmbedAndCluster.mockRejectedValue("group string error");
 
     const result = await client.callTool({
       name: "group_changes",
@@ -246,32 +259,14 @@ describe("server.ts error catch blocks", () => {
     expect((result.content as Array<{ text: string }>)[0].text).toBe("group string error");
   });
 
-  it("group_changes when embed() throws (provider created but embed fails)", async () => {
-    mockResolveChangeIds.mockReturnValue({
-      changes: [
-        { id: "change-1", file_path: "a.ts", hunks: [] },
-        { id: "change-2", file_path: "b.ts", hunks: [] },
-      ],
-      unknown: [],
-    });
-    mockGetEmbeddingProvider.mockReturnValue({
-      embed: async () => { throw new Error("network timeout"); },
-    });
-
-    const result = await client.callTool({
-      name: "group_changes",
-      arguments: { change_ids: ["change-1", "change-2"] },
-    });
-    expect(result.isError).toBe(true);
-    expect((result.content as Array<{ text: string }>)[0].text).toBe("network timeout");
-  });
-
-  it("group_changes single change returns one group without embedding", async () => {
-    mockGetEmbeddingProvider.mockClear();
+  it("group_changes single change returns one group via embedAndCluster", async () => {
     mockResolveChangeIds.mockReturnValue({
       changes: [{ id: "change-1", file_path: "a.ts", hunks: [] }],
       unknown: [],
     });
+    mockEmbedAndCluster.mockResolvedValue([
+      { id: "group-abc12345", change_ids: ["change-1"], summary: "Changes in a.ts" },
+    ]);
 
     const result = await client.callTool({
       name: "group_changes",
@@ -282,9 +277,9 @@ describe("server.ts error catch blocks", () => {
     expect(parsed.groups).toHaveLength(1);
     expect(parsed.groups[0].change_ids).toEqual(["change-1"]);
     expect(parsed.groups[0].summary).toBe("Changes in a.ts");
-    // Single change path skips embedding entirely
-    expect(mockGetEmbeddingProvider).not.toHaveBeenCalled();
   });
+
+  // ---- blame ----
 
   it("blame catch block returns isError on throw", async () => {
     mockGetBlame.mockImplementation(() => {
@@ -310,5 +305,81 @@ describe("server.ts error catch blocks", () => {
     });
     expect(result.isError).toBe(true);
     expect((result.content as Array<{ text: string }>)[0].text).toBe("blame string error");
+  });
+
+  // ---- propose_commits ----
+
+  it("propose_commits catch block returns isError on throw", async () => {
+    mockProposeCommits.mockRejectedValue(new Error("Unknown group IDs: bad-id"));
+
+    const result = await client.callTool({
+      name: "propose_commits",
+      arguments: { group_ids: ["bad-id"] },
+    });
+    expect(result.isError).toBe(true);
+    expect((result.content as Array<{ text: string }>)[0].text).toBe("Unknown group IDs: bad-id");
+  });
+
+  it("propose_commits catch with non-Error value", async () => {
+    mockProposeCommits.mockRejectedValue("propose string error");
+
+    const result = await client.callTool({
+      name: "propose_commits",
+      arguments: { group_ids: ["x"] },
+    });
+    expect(result.isError).toBe(true);
+    expect((result.content as Array<{ text: string }>)[0].text).toBe("propose string error");
+  });
+
+  // ---- apply_commit ----
+
+  it("apply_commit catch block returns isError on throw", async () => {
+    mockApplyCommit.mockRejectedValue(new Error("confirm must be true"));
+
+    const result = await client.callTool({
+      name: "apply_commit",
+      arguments: { commit_id: "commit-abc", confirm: false },
+    });
+    expect(result.isError).toBe(true);
+    expect((result.content as Array<{ text: string }>)[0].text).toBe("confirm must be true");
+  });
+
+  it("apply_commit catch with non-Error value", async () => {
+    mockApplyCommit.mockRejectedValue("apply string error");
+
+    const result = await client.callTool({
+      name: "apply_commit",
+      arguments: { commit_id: "commit-abc", confirm: true },
+    });
+    expect(result.isError).toBe(true);
+    expect((result.content as Array<{ text: string }>)[0].text).toBe("apply string error");
+  });
+
+  // ---- generate_pr ----
+
+  it("generate_pr catch block returns isError on throw", async () => {
+    mockGeneratePr.mockImplementation(() => {
+      throw new Error("At least one commit SHA is required");
+    });
+
+    const result = await client.callTool({
+      name: "generate_pr",
+      arguments: { commit_shas: [] },
+    });
+    expect(result.isError).toBe(true);
+    expect((result.content as Array<{ text: string }>)[0].text).toBe("At least one commit SHA is required");
+  });
+
+  it("generate_pr catch with non-Error value", async () => {
+    mockGeneratePr.mockImplementation(() => {
+      throw "generate string error";
+    });
+
+    const result = await client.callTool({
+      name: "generate_pr",
+      arguments: { commit_shas: ["abc123"] },
+    });
+    expect(result.isError).toBe(true);
+    expect((result.content as Array<{ text: string }>)[0].text).toBe("generate string error");
   });
 });

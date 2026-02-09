@@ -31,28 +31,26 @@ Segmint is **infrastructure**, not an application. It provides structured Git pr
 
 ## Project Status
 
-**Current phase: Phase 3 complete. `repo_status` (Tier 1) implemented ahead of Phase 6.**
+**Current phase: v0.1 complete. All 10 MCP tools are real (no mock data).**
 
 Completed:
-- Phase 1: MCP stdio server wired, 10 tools registered, canonical models, mock data, smoke tests
+- Phase 1: MCP stdio server wired, 10 tools registered, canonical models
 - Phase 2: `list_changes` returns real uncommitted changes (staged + unstaged) parsed from `git diff`
-- Phase 3: `group_changes` uses OpenAI embeddings + cosine-similarity clustering to group changes by intent
-- `repo_status` (Tier 1 read-only) implemented — structured repo state via git status porcelain parsing
-- `log` (Tier 1 read-only) implemented — structured commit history with filtering
-- `show_commit` (Tier 1 read-only) implemented — full commit details with metadata, files, and structured diff
-- `diff_between_refs` (Tier 1 read-only) implemented — structured diff between any two refs
-- `blame` (Tier 1 read-only) implemented — line-level attribution with commit metadata
+- Phase 3: `group_changes` uses embeddings + cosine-similarity clustering to group changes by intent
+- Tier 1 read-only tools: `repo_status`, `log`, `show_commit`, `diff_between_refs`, `blame`
+- Downstream consumers: `propose_commits` (deterministic heuristic), `apply_commit` (real git mutation with safety guardrails), `generate_pr` (real PR draft from commit SHAs)
+- Content-derived stable IDs for groups and commits (SHA-256 hashed from membership)
+- Shared `embedAndCluster()` pipeline (single source of truth for group computation)
 
 Planned phases (do NOT start unless explicitly instructed):
 
 | Phase | Scope |
 |---|---|
-| Phase 4 | LLM-powered group summaries and commit planning |
-| Phase 5 | Real git staging/commit execution + PR generation |
-| Phase 6 | Tier 1 read-only repo intelligence tools |
-| Phase 7 | Tier 2 workspace mutation tools with guardrails |
+| Post-v0.1 | LLM-powered group summaries and commit messages (replace heuristics) |
+| Tier 1 expansion | `list_branches`, `list_tags`, `list_remotes` |
+| Tier 2 | Workspace mutation tools with guardrails (`stage_changes`, `unstage_changes`, etc.) |
 
-Each phase builds on the previous one. Do not skip ahead. Do not begin future phase work speculatively. Tier 1 and Tier 2 tools define the substrate's capability coverage. Commit and PR tooling (Phases 4–5) are downstream consumers that will be restructured to operate on Tier 1/2 primitives as they become available.
+Do not begin future phase work speculatively.
 
 ## Sources of Truth
 
@@ -92,6 +90,7 @@ Defined in `src/models.ts`. These are the canonical shapes:
 - **ChangeGroup** — related changes clustered by intent: `{ id, change_ids[], summary }`
 - **CommitPlan** — a proposed commit: `{ id, title, description, change_group_ids[] }`
 - **PullRequestDraft** — a PR covering multiple commits: `{ title, description, commits[] }`
+- **ApplyCommitResult** — result of applying a commit: `{ success, dry_run, commit_sha?, committed_paths[], message }`
 - **LogCommit** — a single commit from history (Tier 1): `{ sha, short_sha, subject, author_name, author_email, author_date, parents[] }`
 - **CommitDetail** — full commit details (Tier 1): `{ sha, short_sha, subject, body, author_name, author_email, author_date, committer_name, committer_email, committer_date, parents[], files[], diff: { changes: Change[] } }`
 - **RepoStatus** — structured repo state snapshot (Tier 1): `{ is_git_repo, root_path, head, staged[], unstaged[], untracked[], ahead_by?, behind_by?, upstream?, merge_in_progress, rebase_in_progress }`
@@ -111,10 +110,10 @@ These names and signatures are canonical. Do not rename or change contracts with
 | `show_commit` | 1 | `{ sha: string }` | `{ commit: CommitDetail }` | Full commit details with metadata, files, and diff |
 | `diff_between_refs` | 1 | `{ base, head, path?, unified? }` | `{ base, head, changes: Change[] }` | Structured diff between any two refs |
 | `blame` | 1 | `{ path, ref?, start_line?, end_line?, ignore_whitespace?, detect_moves? }` | `BlameResult` | Line-level attribution for a file |
-| `group_changes` | — | `{ change_ids: string[] }` | `{ groups: ChangeGroup[] }` | Group changes by intent |
-| `propose_commits` | — | `{ group_ids: string[] }` | `{ commits: CommitPlan[] }` | Propose commits from groups (mocked) |
-| `apply_commit` | — | `{ commit_id: string }` | `{ success: boolean }` | Apply a commit plan to the repo (mocked) |
-| `generate_pr` | — | `{ commit_ids: string[] }` | `PullRequestDraft` | Generate a PR draft from commits (mocked) |
+| `group_changes` | — | `{ change_ids: string[] }` | `{ groups: ChangeGroup[] }` | Group changes by intent (content-derived stable IDs) |
+| `propose_commits` | — | `{ group_ids: string[] }` | `{ commits: CommitPlan[] }` | Deterministic commit planning from groups |
+| `apply_commit` | — | `{ commit_id, confirm, dry_run?, expected_head_sha?, message_override?, allow_staged? }` | `ApplyCommitResult` | Stage + commit with safety guardrails |
+| `generate_pr` | — | `{ commit_shas: string[] }` | `PullRequestDraft` | Generate PR draft from real commit SHAs (hex format) |
 
 All tools return both `content` (text JSON) and `structuredContent` (typed object).
 
@@ -128,15 +127,6 @@ All tools must follow these conventions:
 - Error messages must be deterministic and machine-readable (e.g., `"Unknown change IDs: bad-id"`).
 - Do not use `try/catch` to swallow errors silently. If something unexpected happens, return it as an MCP error.
 
-## Mock Data Contract
-
-`src/mock-data.ts` is part of the test contract. Do not treat it as throwaway scaffolding.
-
-- IDs (`change-1`, `change-2`, `group-1`, `group-2`, `commit-1`, `commit-2`) are relied on by the smoke test sequence.
-- Do not change mock shapes, IDs, or return values unless tests are updated simultaneously.
-- Mock behavior must remain fully deterministic — no randomness, no timestamps, no external state.
-- `list_changes` and `group_changes` now use real git data and embeddings. `propose_commits`, `apply_commit`, and `generate_pr` still validate against mock IDs.
-
 ## Directory Structure
 
 ```
@@ -145,11 +135,13 @@ src/
   server.ts       — createServer() factory with all 10 tool registrations
   exec-git.ts     — Centralized git command execution + error handling
   models.ts       — TypeScript interfaces for data models
-  mock-data.ts    — Deterministic mock data (test contract for propose_commits, apply_commit, generate_pr)
   git.ts          — Git diff execution and unified diff parsing
-  changes.ts      — Shared change-loading, ID resolution, embedding text builder
+  changes.ts      — Shared change-loading, ID resolution, embedding text, embedAndCluster, computeGroups, contentHash
   embeddings.ts   — Pluggable EmbeddingProvider interface + OpenAI/Local implementations
   cluster.ts      — Cosine similarity + centroid-based greedy clustering
+  propose.ts      — Deterministic commit planning from ChangeGroups (downstream consumer)
+  apply.ts        — Real git staging + commit with safety guardrails (downstream consumer)
+  generate-pr.ts  — PR draft generation from real commit SHAs (downstream consumer)
   history.ts      — Commit history retrieval (Tier 1 read-only)
   show.ts         — Single commit detail retrieval (Tier 1 read-only)
   diff.ts         — Ref-to-ref structured diff (Tier 1 read-only)
@@ -193,8 +185,8 @@ Dev dependencies:
 
 | Variable | Required by | Description |
 |---|---|---|
-| `OPENAI_API_KEY` | `group_changes` | OpenAI API key for text-embedding-3-small. If not set, `group_changes` returns a structured error explaining how to set it. |
-| `SEGMINT_EMBEDDING_PROVIDER` | `group_changes` (optional) | Set to `"local"` to use the offline SHA-256-based LocalEmbeddingProvider instead of OpenAI. Used by tests and development. |
+| `OPENAI_API_KEY` | `group_changes`, `propose_commits`, `apply_commit` | OpenAI API key for text-embedding-3-small. If not set, embedding-dependent tools return a structured error. |
+| `SEGMINT_EMBEDDING_PROVIDER` | optional | Set to `"local"` to use the offline SHA-256-based LocalEmbeddingProvider instead of OpenAI. Used by tests and development. |
 
 ## Build and Run
 

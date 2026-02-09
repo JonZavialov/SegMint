@@ -40,6 +40,14 @@ export interface PullRequestDraft {
   commits: CommitPlan[];
 }
 
+export interface ApplyCommitResult {
+  success: boolean;
+  dry_run: boolean;
+  commit_sha?: string;
+  committed_paths: string[];
+  message: string;
+}
+
 // ---------------------------------------------------------------------------
 // Tier 1: Read-only repo intelligence
 // ---------------------------------------------------------------------------

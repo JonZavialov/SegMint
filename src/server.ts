@@ -8,14 +8,10 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import {
-  MOCK_CHANGE_GROUPS,
-  MOCK_COMMIT_PLANS,
-  MOCK_PR_DRAFT,
-} from "./mock-data.js";
-import { loadChanges, resolveChangeIds, buildEmbeddingText } from "./changes.js";
-import { getEmbeddingProvider } from "./embeddings.js";
-import { clusterByThreshold } from "./cluster.js";
+import { loadChanges, resolveChangeIds, embedAndCluster } from "./changes.js";
+import { proposeCommits } from "./propose.js";
+import { applyCommit } from "./apply.js";
+import { generatePr } from "./generate-pr.js";
 import { getRepoStatus } from "./status.js";
 import { getLog } from "./history.js";
 import { getCommit } from "./show.js";
@@ -54,7 +50,7 @@ const changeSchema = z.object({
 export function createServer(): McpServer {
   const server = new McpServer({
     name: "segmint",
-    version: "0.0.1",
+    version: "0.1.0",
   });
 
   // -------------------------------------------------------------------------
@@ -434,48 +430,8 @@ export function createServer(): McpServer {
           };
         }
 
-        // Single change — skip embeddings, return one group
-        if (changes.length === 1) {
-          const result = {
-            groups: [
-              {
-                id: "group-1",
-                change_ids: [changes[0].id],
-                summary: `Changes in ${changes[0].file_path}`,
-              },
-            ],
-          };
-          return {
-            content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-            structuredContent: result,
-          };
-        }
-
-        // Get embedding provider (throws if OPENAI_API_KEY not set)
-        const provider = getEmbeddingProvider();
-
-        // Build embedding texts and compute embeddings
-        const texts = changes.map((c) => buildEmbeddingText(c));
-        const embeddings = await provider.embed(texts);
-
-        // Cluster by cosine similarity
-        const clusters = clusterByThreshold(embeddings, 0.80);
-
-        // Map clusters to ChangeGroups
-        const groups = clusters.map((cluster, idx) => {
-          const clusterChanges = cluster.indices.map((i) => changes[i]);
-          const filePaths = clusterChanges.map((c) => c.file_path);
-          const summary =
-            filePaths.length === 1
-              ? `Changes in ${filePaths[0]}`
-              : `Related changes across ${filePaths.join(", ")}`;
-
-          return {
-            id: `group-${idx + 1}`,
-            change_ids: clusterChanges.map((c) => c.id),
-            summary,
-          };
-        });
+        // Shared embed→cluster pipeline (handles 0, 1, and N changes)
+        const groups = await embedAndCluster(changes);
 
         const result = { groups };
         return {
@@ -518,25 +474,19 @@ export function createServer(): McpServer {
       }),
     },
     async ({ group_ids }, _extra) => {
-      const knownIds = new Set(MOCK_CHANGE_GROUPS.map((g) => g.id));
-      const unknown = group_ids.filter((id) => !knownIds.has(id));
-      if (unknown.length > 0) {
+      try {
+        const result = await proposeCommits(group_ids);
         return {
-          content: [
-            {
-              type: "text",
-              text: `Unknown group IDs: ${unknown.join(", ")}`,
-            },
-          ],
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          content: [{ type: "text", text: message }],
           isError: true,
         };
       }
-
-      const result = { commits: MOCK_COMMIT_PLANS };
-      return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-        structuredContent: result,
-      };
     }
   );
 
@@ -548,33 +498,51 @@ export function createServer(): McpServer {
     "apply_commit",
     {
       description:
-        "Apply a proposed commit to the repository. Accepts a commit plan ID and stages + commits the associated changes.",
+        "Apply a proposed commit to the repository. Stages + commits the associated changes with safety guardrails. Defaults to dry_run mode.",
       inputSchema: z.object({
-        commit_id: z.string().describe("ID of the commit plan to apply"),
+        commit_id: z.string().describe("ID of the commit plan to apply (from propose_commits)"),
+        confirm: z.boolean().describe("Must be true to proceed. Safety gate."),
+        dry_run: z
+          .boolean()
+          .optional()
+          .describe("Preview without mutating (default true). Set false to create a real commit."),
+        expected_head_sha: z
+          .string()
+          .optional()
+          .describe("If provided, fail if HEAD has moved (optimistic concurrency guard)"),
+        message_override: z
+          .string()
+          .optional()
+          .describe("Custom commit message (overrides heuristic title)"),
+        allow_staged: z
+          .boolean()
+          .optional()
+          .describe("Allow existing staged changes outside this commit's scope (default false)"),
       }),
       outputSchema: z.object({
         success: z.boolean(),
+        dry_run: z.boolean(),
+        commit_sha: z.string().optional(),
+        committed_paths: z.array(z.string()),
+        message: z.string(),
       }),
     },
-    async ({ commit_id }, _extra) => {
-      const known = MOCK_COMMIT_PLANS.some((c) => c.id === commit_id);
-      if (!known) {
+    async ({ commit_id, confirm, dry_run, expected_head_sha, message_override, allow_staged }, _extra) => {
+      try {
+        const result = await applyCommit(
+          { commit_id, confirm, dry_run, expected_head_sha, message_override, allow_staged },
+        );
         return {
-          content: [
-            {
-              type: "text",
-              text: `Unknown commit ID: ${commit_id}`,
-            },
-          ],
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          structuredContent: { ...result },
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          content: [{ type: "text", text: message }],
           isError: true,
         };
       }
-
-      const result = { success: true };
-      return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-        structuredContent: result,
-      };
     }
   );
 
@@ -586,11 +554,11 @@ export function createServer(): McpServer {
     "generate_pr",
     {
       description:
-        "Generate a pull request draft from a set of commit plan IDs. Returns a PullRequestDraft with a title, description, and the full list of commits.",
+        "Generate a pull request draft from real commit SHAs. Returns a PullRequestDraft with a title, description, and the full list of commits.",
       inputSchema: z.object({
-        commit_ids: z
+        commit_shas: z
           .array(z.string())
-          .describe("IDs of commit plans to include in the PR"),
+          .describe("Git commit SHAs (hex format, 4+ chars) to include in the PR draft"),
       }),
       outputSchema: z.object({
         title: z.string(),
@@ -605,30 +573,24 @@ export function createServer(): McpServer {
         ),
       }),
     },
-    async ({ commit_ids }, _extra) => {
-      const knownIds = new Set(MOCK_COMMIT_PLANS.map((c) => c.id));
-      const unknown = commit_ids.filter((id) => !knownIds.has(id));
-      if (unknown.length > 0) {
+    async ({ commit_shas }, _extra) => {
+      try {
+        const result = generatePr(commit_shas);
         return {
-          content: [
-            {
-              type: "text",
-              text: `Unknown commit IDs: ${unknown.join(", ")}`,
-            },
-          ],
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          structuredContent: {
+            title: result.title,
+            description: result.description,
+            commits: result.commits.map((c) => ({ ...c })),
+          },
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          content: [{ type: "text", text: message }],
           isError: true,
         };
       }
-
-      const result = {
-        title: MOCK_PR_DRAFT.title,
-        description: MOCK_PR_DRAFT.description,
-        commits: MOCK_PR_DRAFT.commits.map((c) => ({ ...c })),
-      };
-      return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-        structuredContent: result,
-      };
     }
   );
 
