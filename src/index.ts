@@ -7,7 +7,7 @@
  * Model Context Protocol so agents can inspect diffs, cluster edits by intent,
  * and operate on Git at a semantic level.
  *
- * repo_status, list_changes, log, show_commit, and group_changes use real git + embeddings.
+ * repo_status, list_changes, log, show_commit, diff_between_refs, and group_changes use real git + embeddings.
  * propose_commits, apply_commit, generate_pr return mocked data.
  */
 
@@ -25,6 +25,7 @@ import { clusterByThreshold } from "./cluster.js";
 import { getRepoStatus } from "./status.js";
 import { getLog } from "./history.js";
 import { getCommit } from "./show.js";
+import { getDiffBetweenRefs } from "./diff.js";
 
 // ---------------------------------------------------------------------------
 // Server
@@ -256,6 +257,58 @@ server.registerTool(
               })),
             },
           },
+        },
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        content: [{ type: "text", text: message }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Tool: diff_between_refs (Tier 1 — read-only)
+// ---------------------------------------------------------------------------
+
+server.registerTool(
+  "diff_between_refs",
+  {
+    description:
+      "Compute a structured diff between any two git refs (branches, commits, tags). Returns Change[] with typed hunks.",
+    inputSchema: z.object({
+      base: z.string().describe("Base ref (branch, tag, SHA, or expression like HEAD~3)"),
+      head: z.string().describe("Head ref to diff against base"),
+      path: z
+        .string()
+        .optional()
+        .describe("Restrict diff to this path"),
+      unified: z
+        .number()
+        .optional()
+        .describe("Lines of context (default 3, clamped 0..20)"),
+    }),
+    outputSchema: z.object({
+      base: z.string(),
+      head: z.string(),
+      changes: z.array(changeSchema),
+    }),
+  },
+  async ({ base, head, path, unified }, _extra) => {
+    try {
+      const changes = getDiffBetweenRefs({ base, head, path, unified });
+      const result = { base, head, changes };
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        structuredContent: {
+          base,
+          head,
+          changes: changes.map((c) => ({
+            ...c,
+            hunks: c.hunks.map((h) => ({ ...h, lines: [...h.lines] })),
+          })),
         },
       };
     } catch (error) {

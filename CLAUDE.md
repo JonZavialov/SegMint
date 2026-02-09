@@ -34,12 +34,13 @@ Segmint is **infrastructure**, not an application. It provides structured Git pr
 **Current phase: Phase 3 complete. `repo_status` (Tier 1) implemented ahead of Phase 6.**
 
 Completed:
-- Phase 1: MCP stdio server wired, 8 tools registered, canonical models, mock data, smoke tests
+- Phase 1: MCP stdio server wired, 9 tools registered, canonical models, mock data, smoke tests
 - Phase 2: `list_changes` returns real uncommitted changes (staged + unstaged) parsed from `git diff`
 - Phase 3: `group_changes` uses OpenAI embeddings + cosine-similarity clustering to group changes by intent
 - `repo_status` (Tier 1 read-only) implemented — structured repo state via git status porcelain parsing
 - `log` (Tier 1 read-only) implemented — structured commit history with filtering
 - `show_commit` (Tier 1 read-only) implemented — full commit details with metadata, files, and structured diff
+- `diff_between_refs` (Tier 1 read-only) implemented — structured diff between any two refs
 
 Planned phases (do NOT start unless explicitly instructed):
 
@@ -103,6 +104,7 @@ These names and signatures are canonical. Do not rename or change contracts with
 | `list_changes` | 1 | `{}` | `{ changes: Change[] }` | List uncommitted changes as structured objects |
 | `log` | 1 | `{ limit?, ref?, path?, since?, until?, include_merges? }` | `{ commits: LogCommit[] }` | Structured commit history with filtering |
 | `show_commit` | 1 | `{ sha: string }` | `{ commit: CommitDetail }` | Full commit details with metadata, files, and diff |
+| `diff_between_refs` | 1 | `{ base, head, path?, unified? }` | `{ base, head, changes: Change[] }` | Structured diff between any two refs |
 | `group_changes` | — | `{ change_ids: string[] }` | `{ groups: ChangeGroup[] }` | Group changes by intent |
 | `propose_commits` | — | `{ group_ids: string[] }` | `{ commits: CommitPlan[] }` | Propose commits from groups (mocked) |
 | `apply_commit` | — | `{ commit_id: string }` | `{ success: boolean }` | Apply a commit plan to the repo (mocked) |
@@ -142,6 +144,7 @@ src/
   cluster.ts      — Cosine similarity + centroid-based greedy clustering
   history.ts      — Commit history retrieval (Tier 1 read-only)
   show.ts         — Single commit detail retrieval (Tier 1 read-only)
+  diff.ts         — Ref-to-ref structured diff (Tier 1 read-only)
   status.ts       — Repository status gathering (Tier 1 read-only)
 typescript-sdk/   — Local copy of MCP TypeScript SDK (READ-ONLY)
 llms-full.txt     — MCP protocol documentation (READ-ONLY)
@@ -187,7 +190,7 @@ npm start        # node build/index.js (stdio)
 
 1. `npm run build` must succeed with zero errors.
 2. Start the MCP server and confirm it responds to `initialize`.
-3. Call `tools/list` and verify all 8 tools are present.
+3. Call `tools/list` and verify all 9 tools are present.
 4. Call `list_changes` and verify structured output.
 5. Call at least one additional tool.
 
@@ -207,7 +210,8 @@ Send these messages over stdin (each on its own line):
 {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"list_changes","arguments":{}}}
 {"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"log","arguments":{"limit":5}}}
 {"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"show_commit","arguments":{"sha":"HEAD"}}}
-{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"group_changes","arguments":{"change_ids":["change-1","change-2"]}}}
+{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"diff_between_refs","arguments":{"base":"HEAD~1","head":"HEAD"}}}
+{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"group_changes","arguments":{"change_ids":["change-1","change-2"]}}}
 ```
 
 ## Coding Standards
