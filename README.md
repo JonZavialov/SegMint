@@ -40,6 +40,8 @@ Segmint runs as a stdio-based MCP server. An AI agent connects over stdin/stdout
 
 | Tool | Tier | Status | Description |
 |---|---|---|---|
+| `set_repo_root` | 1 | Real | Explicitly select target repository root from any path inside a repo |
+| `get_repo_root` | 1 | Real | Return the currently active repository root |
 | `repo_status` | 1 | Real | Structured repository state — HEAD, staged/unstaged/untracked, ahead/behind, merge/rebase |
 | `list_changes` | 1 | Real | Parse uncommitted diffs into structured `Change[]` objects |
 | `log` | 1 | Real | Structured commit history with ref, path, date, and merge filtering |
@@ -50,6 +52,21 @@ Segmint runs as a stdio-based MCP server. An AI agent connects over stdin/stdout
 | `propose_commits` | — | Real | Deterministic commit planning from change groups |
 | `apply_commit` | — | Real | Stage and commit files with safety guardrails (confirm, dry_run, expected_head_sha) |
 | `generate_pr` | — | Real | Generate a pull request draft from real commit SHAs |
+
+### Repository selection and safety defaults
+
+- Segmint is safe by default: if no repository is selected and startup cwd is not inside a git repo, tools return `{ isError: true, code: "SEGMINT_NO_REPO" }`.
+- For cross-client reliability, call `set_repo_root` explicitly after connecting.
+- `set_repo_root` accepts either a repo root or any subdirectory inside a repo.
+- `repo_status` returns `repo_root` so callers can verify the active repository.
+
+### Response safety caps
+
+- Path arrays are capped at 200 entries.
+- Diff responses are capped deterministically: max 200 changed files, 200 hunks per file, and 200 lines per hunk.
+- When truncation happens, responses include:
+  - `truncated: true`
+  - `omitted_count: <number of omitted items>`
 
 ### repo_status
 
@@ -333,7 +350,15 @@ Or copy `.env.example` to `.env` and edit it — the server reads from the proce
 
 ## Running Locally
 
-### Install and build
+### Install
+
+Global install:
+
+```bash
+npm i -g segmint
+```
+
+Local install (recommended for development):
 
 ```bash
 npm install
@@ -341,6 +366,50 @@ npm run build
 ```
 
 The `build` script runs `npm run clean && tsc`, which removes stale artifacts from `build/` before compiling. This prevents leftover files from deleted source modules.
+
+### Run
+
+Global:
+
+```bash
+segmint
+```
+
+Local:
+
+```bash
+npm start
+```
+
+### Select a repo (JSON-RPC examples)
+
+```json
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"set_repo_root","arguments":{"path":"/absolute/path/to/repo/or/subdir"}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get_repo_root","arguments":{}}}
+```
+
+### Claude Desktop example
+
+Claude Desktop can still set `cwd` in the server command configuration, but this is optional when `set_repo_root` is used.
+
+```json
+{
+  "mcpServers": {
+    "segmint": {
+      "command": "node",
+      "args": ["/absolute/path/to/Segmint/build/index.js"],
+      "cwd": "/optional/default/repo"
+    }
+  }
+}
+```
+
+### First-run verification (copy/paste)
+
+```json
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"repo_status","arguments":{}}}
+{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"list_changes","arguments":{}}}
+```
 
 ### Test with JSON-RPC over stdio
 
@@ -350,13 +419,14 @@ The server communicates via stdin/stdout using JSON-RPC. Send one message per li
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0.0"}}}
 {"jsonrpc":"2.0","method":"notifications/initialized"}
 {"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
-{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"repo_status","arguments":{}}}
-{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"list_changes","arguments":{}}}
-{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"log","arguments":{"limit":5}}}
-{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"show_commit","arguments":{"sha":"HEAD"}}}
-{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"diff_between_refs","arguments":{"base":"HEAD~1","head":"HEAD"}}}
-{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"blame","arguments":{"path":"src/index.ts"}}}
-{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"group_changes","arguments":{"change_ids":["change-1","change-2"]}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"set_repo_root","arguments":{"path":"/path/to/repo"}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"repo_status","arguments":{}}}
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"list_changes","arguments":{}}}
+{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"log","arguments":{"limit":5}}}
+{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"show_commit","arguments":{"sha":"HEAD"}}}
+{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"diff_between_refs","arguments":{"base":"HEAD~1","head":"HEAD"}}}
+{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"blame","arguments":{"path":"src/index.ts"}}}
+{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"group_changes","arguments":{"change_ids":["change-1","change-2"]}}}
 ```
 
 Start the server and pipe input:
@@ -422,6 +492,7 @@ Operations like `push`, `rebase`, `reset --hard`, `force push`, and history rewr
 | Phase 3 | Complete | Embeddings + clustering — semantic ChangeGroups |
 | Tier 1 | Complete | Read-only repo intelligence tools (repo_status, log, show_commit, diff_between_refs, blame) |
 | Downstream | Complete | Real propose_commits, apply_commit, generate_pr (v0.1) |
+| v0.1.1 Safety | Complete | Explicit repo selection (`set_repo_root`/`get_repo_root`) + response truncation guardrails |
 
 ### Post-v0.1 Roadmap
 

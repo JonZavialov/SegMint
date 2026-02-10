@@ -71,11 +71,13 @@ describe("MCP server E2E (in-process)", () => {
       "blame",
       "diff_between_refs",
       "generate_pr",
+      "get_repo_root",
       "group_changes",
       "list_changes",
       "log",
       "propose_commits",
       "repo_status",
+      "set_repo_root",
       "show_commit",
     ]);
   });
