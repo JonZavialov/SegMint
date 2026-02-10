@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer } from "../../src/server.js";
@@ -28,6 +29,13 @@ function createTempRepo(prefix: string): string {
   writeFileSync(join(dir, "file-c.txt"), "new file\n");
 
   return dir;
+}
+
+function canonicalPath(value: string): string {
+  const resolved = resolve(value);
+  const real = realpathSync.native(resolved);
+  const unixLike = real.replace(/\\/g, "/");
+  return process.platform === "win32" ? unixLike.toLowerCase() : unixLike;
 }
 
 describe("repo selection safety", () => {
@@ -98,12 +106,14 @@ describe("repo selection safety", () => {
     expect(setResult.isError).toBeFalsy();
 
     const rootResult = await client.callTool({ name: "get_repo_root", arguments: {} });
-    expect((rootResult.structuredContent as { repo_root?: string }).repo_root).toBe(repoDir);
+    expect(
+      canonicalPath((rootResult.structuredContent as { repo_root?: string }).repo_root ?? "")
+    ).toBe(canonicalPath(repoDir));
 
     const repoStatus = await client.callTool({ name: "repo_status", arguments: {} });
     expect(repoStatus.isError).toBeFalsy();
     const repoStatusSc = repoStatus.structuredContent as { repo_root: string };
-    expect(repoStatusSc.repo_root).toBe(repoDir);
+    expect(canonicalPath(repoStatusSc.repo_root)).toBe(canonicalPath(repoDir));
 
     const listChanges = await client.callTool({ name: "list_changes", arguments: {} });
     expect(listChanges.isError).toBeFalsy();
