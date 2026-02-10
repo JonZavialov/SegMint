@@ -31,7 +31,7 @@ Segmint is **infrastructure**, not an application. It provides structured Git pr
 
 ## Project Status
 
-**Current phase: v0.1 complete. All 10 MCP tools are real (no mock data).**
+**Current phase: v0.1.1 complete. All 12 MCP tools are real (no mock data).**
 
 Completed:
 - Phase 1: MCP stdio server wired, 10 tools registered, canonical models
@@ -104,8 +104,10 @@ These names and signatures are canonical. Do not rename or change contracts with
 
 | Tool | Tier | Input | Output | Description |
 |---|---|---|---|---|
-| `repo_status` | 1 | `{}` | `RepoStatus` | Structured repository state |
-| `list_changes` | 1 | `{}` | `{ changes: Change[] }` | List uncommitted changes as structured objects |
+| `set_repo_root` | 1 | `{ path: string }` | `{ repo_root: string }` | Explicitly select the repository root for all subsequent tool calls |
+| `get_repo_root` | 1 | `{}` | `{ repo_root?: string }` | Return the currently active repository root |
+| `repo_status` | 1 | `{}` | `RepoStatus & { repo_root?, truncated, omitted_count }` | Structured repository state for the active repository |
+| `list_changes` | 1 | `{}` | `{ changes: Change[], truncated, omitted_count }` | List uncommitted changes as structured objects |
 | `log` | 1 | `{ limit?, ref?, path?, since?, until?, include_merges? }` | `{ commits: LogCommit[] }` | Structured commit history with filtering |
 | `show_commit` | 1 | `{ sha: string }` | `{ commit: CommitDetail }` | Full commit details with metadata, files, and diff |
 | `diff_between_refs` | 1 | `{ base, head, path?, unified? }` | `{ base, head, changes: Change[] }` | Structured diff between any two refs |
@@ -116,6 +118,8 @@ These names and signatures are canonical. Do not rename or change contracts with
 | `generate_pr` | — | `{ commit_shas: string[] }` | `PullRequestDraft` | Generate PR draft from real commit SHAs (hex format) |
 
 All tools return both `content` (text JSON) and `structuredContent` (typed object).
+
+**Anti-drift rule:** repository selection is mandatory for cross-client correctness. Clients should call `set_repo_root` explicitly and must not rely on implicit process cwd behavior.
 
 ## Error Handling
 
@@ -132,7 +136,7 @@ All tools must follow these conventions:
 ```
 src/
   index.ts        — MCP server entrypoint (slim — imports createServer, connects stdio)
-  server.ts       — createServer() factory with all 10 tool registrations
+  server.ts       — createServer() factory with all 12 tool registrations
   exec-git.ts     — Centralized git command execution + error handling
   models.ts       — TypeScript interfaces for data models
   git.ts          — Git diff execution and unified diff parsing
@@ -240,13 +244,14 @@ Send these messages over stdin (each on its own line):
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0.0"}}}
 {"jsonrpc":"2.0","method":"notifications/initialized"}
 {"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
-{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"repo_status","arguments":{}}}
-{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"list_changes","arguments":{}}}
-{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"log","arguments":{"limit":5}}}
-{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"show_commit","arguments":{"sha":"HEAD"}}}
-{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"diff_between_refs","arguments":{"base":"HEAD~1","head":"HEAD"}}}
-{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"blame","arguments":{"path":"src/index.ts"}}}
-{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"group_changes","arguments":{"change_ids":["change-1","change-2"]}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"set_repo_root","arguments":{"path":"/path/to/repo"}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"repo_status","arguments":{}}}
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"list_changes","arguments":{}}}
+{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"log","arguments":{"limit":5}}}
+{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"show_commit","arguments":{"sha":"HEAD"}}}
+{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"diff_between_refs","arguments":{"base":"HEAD~1","head":"HEAD"}}}
+{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"blame","arguments":{"path":"src/index.ts"}}}
+{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"group_changes","arguments":{"change_ids":["change-1","change-2"]}}}
 ```
 
 ## Coding Standards

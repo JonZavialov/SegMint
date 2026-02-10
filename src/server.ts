@@ -17,6 +17,8 @@ import { getLog } from "./history.js";
 import { getCommit } from "./show.js";
 import { getDiffBetweenRefs } from "./diff.js";
 import { getBlame } from "./blame.js";
+import { resolveGitRoot, tryResolveGitRoot } from "./exec-git.js";
+import { MAX_BLAME_LINES, MAX_PATH_ENTRIES, capChanges, truncateArray } from "./limits.js";
 
 // ---------------------------------------------------------------------------
 // Shared schemas
@@ -50,8 +52,83 @@ const changeSchema = z.object({
 export function createServer(): McpServer {
   const server = new McpServer({
     name: "segmint",
-    version: "0.1.0",
+    version: "0.1.1",
   });
+
+  let configuredRepoRoot: string | undefined;
+  const startupRepoRoot = tryResolveGitRoot(process.cwd());
+
+  function activeRepoRoot(): string | undefined {
+    return configuredRepoRoot ?? startupRepoRoot;
+  }
+
+  function noRepoResult() {
+    const message = "No repository selected. Call set_repo_root first, or start Segmint from inside a git repository.";
+    return {
+      content: [{ type: "text" as const, text: message }],
+      structuredContent: {
+        code: "SEGMINT_NO_REPO",
+        message,
+      },
+      isError: true,
+    };
+  }
+
+  function requireRepoRoot(): string | undefined {
+    return activeRepoRoot();
+  }
+
+  // -------------------------------------------------------------------------
+  // Tool: set_repo_root (Tier 1 — read-only)
+  // -------------------------------------------------------------------------
+
+  server.registerTool(
+    "set_repo_root",
+    {
+      description:
+        "Set explicit repository root for all Segmint tools. Accepts any directory inside a repo and resolves to the repo toplevel.",
+      inputSchema: z.object({
+        path: z.string().describe("Path to a git repository root or any subdirectory inside it"),
+      }),
+      outputSchema: z.object({
+        repo_root: z.string(),
+      }),
+    },
+    async ({ path }, _extra) => {
+      try {
+        const repo_root = resolveGitRoot(path);
+        configuredRepoRoot = repo_root;
+        return {
+          content: [{ type: "text", text: JSON.stringify({ repo_root }, null, 2) }],
+          structuredContent: { repo_root },
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          content: [{ type: "text", text: message }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.registerTool(
+    "get_repo_root",
+    {
+      description: "Get current repository root used by Segmint tools.",
+      inputSchema: z.object({}),
+      outputSchema: z.object({
+        repo_root: z.string().optional(),
+      }),
+    },
+    async (_args, _extra) => {
+      const repo_root = activeRepoRoot();
+      return {
+        content: [{ type: "text", text: JSON.stringify({ repo_root }, null, 2) }],
+        structuredContent: { repo_root },
+      };
+    }
+  );
 
   // -------------------------------------------------------------------------
   // Tool: list_changes
@@ -71,12 +148,17 @@ export function createServer(): McpServer {
             hunks: z.array(hunkSchema),
           })
         ),
+        truncated: z.boolean(),
+        omitted_count: z.number(),
       }),
     },
     async (_args, _extra) => {
+      const repoRoot = requireRepoRoot();
+      if (!repoRoot) return noRepoResult();
       try {
-        const changes = loadChanges();
-        const result = { changes };
+        const changes = loadChanges(repoRoot);
+        const limited = capChanges(changes);
+        const result = { changes: limited.changes, truncated: limited.truncated, omitted_count: limited.omitted_count };
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
           structuredContent: result,
@@ -104,6 +186,7 @@ export function createServer(): McpServer {
       outputSchema: z.object({
         is_git_repo: z.boolean(),
         root_path: z.string(),
+        repo_root: z.string().optional(),
         head: z.object({
           type: z.enum(["branch", "detached"]),
           name: z.string().optional(),
@@ -117,14 +200,31 @@ export function createServer(): McpServer {
         upstream: z.string().optional(),
         merge_in_progress: z.boolean(),
         rebase_in_progress: z.boolean(),
+        truncated: z.boolean(),
+        omitted_count: z.number(),
       }),
     },
     async (_args, _extra) => {
+      const repoRoot = requireRepoRoot();
+      if (!repoRoot) return noRepoResult();
       try {
-        const status = getRepoStatus();
+        const status = getRepoStatus(repoRoot);
+        const staged = truncateArray(status.staged, MAX_PATH_ENTRIES);
+        const unstaged = truncateArray(status.unstaged, MAX_PATH_ENTRIES);
+        const untracked = truncateArray(status.untracked, MAX_PATH_ENTRIES);
+        const omittedCount = staged.omitted_count + unstaged.omitted_count + untracked.omitted_count;
+        const withSafety = {
+          ...status,
+          repo_root: repoRoot,
+          staged: staged.items,
+          unstaged: unstaged.items,
+          untracked: untracked.items,
+          truncated: omittedCount > 0,
+          omitted_count: omittedCount,
+        };
         return {
-          content: [{ type: "text", text: JSON.stringify(status, null, 2) }],
-          structuredContent: { ...status },
+          content: [{ type: "text", text: JSON.stringify(withSafety, null, 2) }],
+          structuredContent: withSafety,
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -183,14 +283,20 @@ export function createServer(): McpServer {
             parents: z.array(z.string()),
           })
         ),
+        truncated: z.boolean(),
+        omitted_count: z.number(),
       }),
     },
     async (args, _extra) => {
+      const repoRoot = requireRepoRoot();
+      if (!repoRoot) return noRepoResult();
       try {
-        const result = getLog(args);
+        const result = getLog(args, repoRoot);
+        const commits = truncateArray(result.commits, MAX_PATH_ENTRIES);
+        const safeResult = { commits: commits.items, truncated: commits.truncated, omitted_count: commits.omitted_count };
         return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-          structuredContent: result,
+          content: [{ type: "text", text: JSON.stringify(safeResult, null, 2) }],
+          structuredContent: safeResult,
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -232,24 +338,30 @@ export function createServer(): McpServer {
             changes: z.array(changeSchema),
           }),
         }),
+        truncated: z.boolean(),
+        omitted_count: z.number(),
       }),
     },
     async ({ sha }, _extra) => {
+      const repoRoot = requireRepoRoot();
+      if (!repoRoot) return noRepoResult();
       try {
-        const result = getCommit(sha);
+        const result = getCommit(sha, repoRoot);
+        const files = truncateArray(result.commit.files, MAX_PATH_ENTRIES);
+        const diff = capChanges(result.commit.diff.changes);
+        const safeResult = {
+          commit: {
+            ...result.commit,
+            files: files.items,
+            diff: { changes: diff.changes },
+          },
+          truncated: files.truncated || diff.truncated,
+          omitted_count: files.omitted_count + diff.omitted_count,
+        };
         return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(safeResult, null, 2) }],
           structuredContent: {
-            commit: {
-              ...result.commit,
-              files: result.commit.files.map((f) => ({ ...f })),
-              diff: {
-                changes: result.commit.diff.changes.map((c) => ({
-                  ...c,
-                  hunks: c.hunks.map((h) => ({ ...h, lines: [...h.lines] })),
-                })),
-              },
-            },
+            ...safeResult,
           },
         };
       } catch (error) {
@@ -287,21 +399,28 @@ export function createServer(): McpServer {
         base: z.string(),
         head: z.string(),
         changes: z.array(changeSchema),
+        truncated: z.boolean(),
+        omitted_count: z.number(),
       }),
     },
     async ({ base, head, path, unified }, _extra) => {
+      const repoRoot = requireRepoRoot();
+      if (!repoRoot) return noRepoResult();
       try {
-        const changes = getDiffBetweenRefs({ base, head, path, unified });
-        const result = { base, head, changes };
+        const changes = getDiffBetweenRefs({ base, head, path, unified }, repoRoot);
+        const limited = capChanges(changes);
+        const result = { base, head, changes: limited.changes, truncated: limited.truncated, omitted_count: limited.omitted_count };
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
           structuredContent: {
             base,
             head,
-            changes: changes.map((c) => ({
+            changes: limited.changes.map((c) => ({
               ...c,
               hunks: c.hunks.map((h) => ({ ...h, lines: [...h.lines] })),
             })),
+            truncated: limited.truncated,
+            omitted_count: limited.omitted_count,
           },
         };
       } catch (error) {
@@ -363,21 +482,28 @@ export function createServer(): McpServer {
             }),
           })
         ),
+        truncated: z.boolean(),
+        omitted_count: z.number(),
       }),
     },
     async ({ path, ref, start_line, end_line, ignore_whitespace, detect_moves }, _extra) => {
+      const repoRoot = requireRepoRoot();
+      if (!repoRoot) return noRepoResult();
       try {
-        const result = getBlame({ path, ref, start_line, end_line, ignore_whitespace, detect_moves });
+        const result = getBlame({ path, ref, start_line, end_line, ignore_whitespace, detect_moves }, repoRoot);
+        const lines = truncateArray(result.lines, MAX_BLAME_LINES);
         return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify({ ...result, lines: lines.items, truncated: lines.truncated, omitted_count: lines.omitted_count }, null, 2) }],
           structuredContent: {
             path: result.path,
             ref: result.ref,
-            lines: result.lines.map((l) => ({
+            lines: lines.items.map((l) => ({
               line_number: l.line_number,
               content: l.content,
               commit: { ...l.commit },
             })),
+            truncated: lines.truncated,
+            omitted_count: lines.omitted_count,
           },
         };
       } catch (error) {
@@ -415,9 +541,11 @@ export function createServer(): McpServer {
       }),
     },
     async ({ change_ids }, _extra) => {
+      const repoRoot = requireRepoRoot();
+      if (!repoRoot) return noRepoResult();
       try {
         // Resolve requested IDs against current repo state
-        const { changes, unknown } = resolveChangeIds(change_ids);
+        const { changes, unknown } = resolveChangeIds(change_ids, repoRoot);
         if (unknown.length > 0) {
           return {
             content: [
@@ -474,8 +602,10 @@ export function createServer(): McpServer {
       }),
     },
     async ({ group_ids }, _extra) => {
+      const repoRoot = requireRepoRoot();
+      if (!repoRoot) return noRepoResult();
       try {
-        const result = await proposeCommits(group_ids);
+        const result = await proposeCommits(group_ids, repoRoot);
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
           structuredContent: result,
@@ -528,9 +658,12 @@ export function createServer(): McpServer {
       }),
     },
     async ({ commit_id, confirm, dry_run, expected_head_sha, message_override, allow_staged }, _extra) => {
+      const repoRoot = requireRepoRoot();
+      if (!repoRoot) return noRepoResult();
       try {
         const result = await applyCommit(
           { commit_id, confirm, dry_run, expected_head_sha, message_override, allow_staged },
+          repoRoot,
         );
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
@@ -574,8 +707,10 @@ export function createServer(): McpServer {
       }),
     },
     async ({ commit_shas }, _extra) => {
+      const repoRoot = requireRepoRoot();
+      if (!repoRoot) return noRepoResult();
       try {
-        const result = generatePr(commit_shas);
+        const result = generatePr(commit_shas, repoRoot);
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
           structuredContent: {

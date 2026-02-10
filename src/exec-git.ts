@@ -63,6 +63,19 @@ export function tryExecGit(args: string[], cwd?: string): ExecGitResult {
   }
 }
 
+/** Resolve git repository root for an arbitrary path using `git -C`. */
+export function resolveGitRoot(path: string): string {
+  return execGit(["-C", path, "rev-parse", "--show-toplevel"]).trim();
+}
+
+/** Best-effort git root resolution. Returns undefined when path is not in a repo. */
+export function tryResolveGitRoot(path: string): string | undefined {
+  const result = tryExecGit(["-C", path, "rev-parse", "--show-toplevel"]);
+  if (!result.ok) return undefined;
+  const root = result.stdout.trim();
+  return root.length > 0 ? root : undefined;
+}
+
 /**
  * Inspect a git error and throw a descriptive message.
  *
